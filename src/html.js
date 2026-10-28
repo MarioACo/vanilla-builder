@@ -1,6 +1,5 @@
 // HTML: extrae referencias con su posición exacta, aplica ediciones puntuales y minifica con verificación.
 import { parse } from 'parse5';
-import { minify } from 'html-minifier-terser';
 
 const JS_TYPES = new Set([
   '',
@@ -56,8 +55,19 @@ const ELEMENT_ATTRS = {
   html: [['manifest']],
 };
 const SOFT_DATA_ATTRS = new Set(['data-src', 'data-srcset', 'data-bg', 'data-background', 'data-background-image', 'data-poster', 'data-href']);
-const META_IMAGE = /^(og:(image|video|audio)(:url|:secure_url)?|twitter:(image|player)(:src)?|msapplication-(tileimage|config|square\d+x\d+logo|wide\d+x\d+logo))$/i;
-const LINK_ASSET_RELS = new Set(['icon', 'shortcut', 'apple-touch-icon', 'apple-touch-icon-precomposed', 'apple-touch-startup-image', 'mask-icon', 'manifest', 'image_src', 'fluid-icon']);
+const META_IMAGE =
+  /^(og:(image|video|audio)(:url|:secure_url)?|twitter:(image|player)(:src)?|msapplication-(tileimage|config|square\d+x\d+logo|wide\d+x\d+logo))$/i;
+const LINK_ASSET_RELS = new Set([
+  'icon',
+  'shortcut',
+  'apple-touch-icon',
+  'apple-touch-icon-precomposed',
+  'apple-touch-startup-image',
+  'mask-icon',
+  'manifest',
+  'image_src',
+  'fluid-icon',
+]);
 const LINK_PAGE_RELS = new Set(['canonical', 'alternate', 'next', 'prev', 'prerender', 'help', 'license', 'author']);
 
 const attrName = (a) => (a.prefix ? `${a.prefix}:${a.name}` : a.name);
@@ -93,7 +103,7 @@ export function parseHtml(text) {
     if (node.nodeName === '#text' || node.nodeName === '#comment' || node.nodeName === '#documentType') return;
     const tag = node.tagName?.toLowerCase();
     if (tag) handleElement(node, tag, parent, index, inTemplate);
-    const kids = node.nodeName === 'template' && node.content ? node.content.childNodes : node.childNodes ?? [];
+    const kids = node.nodeName === 'template' && node.content ? node.content.childNodes : (node.childNodes ?? []);
     const childInTemplate = inTemplate || node.nodeName === 'template';
     for (let i = 0; i < kids.length; i++) visit(kids[i], node.nodeName === 'template' ? node.content : node, i, childInTemplate);
   };
@@ -121,7 +131,9 @@ export function parseHtml(text) {
     }
     if (tag === 'script') {
       const content =
-        loc.startTag && loc.endTag ? { start: loc.startTag.endOffset, end: loc.endTag.startOffset, code: text.slice(loc.startTag.endOffset, loc.endTag.startOffset) } : null;
+        loc.startTag && loc.endTag
+          ? { start: loc.startTag.endOffset, end: loc.endTag.startOffset, code: text.slice(loc.startTag.endOffset, loc.endTag.startOffset) }
+          : null;
       const kind = scriptKind(attrs.get('type'));
       const item = { el, attrs, kind, parent, index, inTemplate, start: loc.startOffset, end: loc.endOffset, src: null, inline: null };
       if (attrs.has('src')) item.src = { value: attrs.get('src'), ...attrLoc(el, 'src') };
@@ -133,7 +145,13 @@ export function parseHtml(text) {
     if (tag === 'style') {
       const t = (attrs.get('type') ?? '').trim().toLowerCase();
       if ((t === '' || t === 'text/css') && loc.startTag && loc.endTag)
-        model.styles.push({ el, attrs, start: loc.startTag.endOffset, end: loc.endTag.startOffset, code: text.slice(loc.startTag.endOffset, loc.endTag.startOffset) });
+        model.styles.push({
+          el,
+          attrs,
+          start: loc.startTag.endOffset,
+          end: loc.endTag.startOffset,
+          code: text.slice(loc.startTag.endOffset, loc.endTag.startOffset),
+        });
       return;
     }
     if (tag === 'link') {
@@ -216,7 +234,9 @@ export function escapeInlineStyle(code) {
 const WS = /^[ \t\n\r\f]+|[ \t\n\r\f]+$/g;
 const INVISIBLE = new Set(['script', 'style', 'link', 'meta']);
 const BOOLEAN_ATTRS = new Set(
-  'allowfullscreen async autofocus autoplay checked compact controls declare default defaultchecked defaultmuted defaultselected defer disabled enabled formnovalidate hidden indeterminate inert ismap itemscope loop multiple muted nohref noresize noshade novalidate nowrap open pauseonexit readonly required reversed scoped seamless selected sortable truespeed typemustmatch visible'.split(' '),
+  'allowfullscreen async autofocus autoplay checked compact controls declare default defaultchecked defaultmuted defaultselected defer disabled enabled formnovalidate hidden indeterminate inert ismap itemscope loop multiple muted nohref noresize noshade novalidate nowrap open pauseonexit readonly required reversed scoped seamless selected sortable truespeed typemustmatch visible'.split(
+    ' ',
+  ),
 );
 
 /** Normaliza solo las diferencias de atributos que el estándar considera equivalentes. */
@@ -280,7 +300,7 @@ export function htmlSignature(text) {
     }
     flush(parentTag, raw);
     parts.push(open);
-    const kids = tag === 'template' && n.content ? n.content.childNodes : n.childNodes ?? [];
+    const kids = tag === 'template' && n.content ? n.content.childNodes : (n.childNodes ?? []);
     const keepRaw = raw || tag === 'pre' || tag === 'textarea' || tag === 'script' || tag === 'style' || tag === 'xmp' || tag === 'plaintext';
     for (const k of kids) visit(k, keepRaw, tag);
     flush(tag, keepRaw);
@@ -300,63 +320,11 @@ export function detectPreWhitespace(cssText) {
  * los mismos elementos, atributos y texto visible. Si no, devuelve el original.
  */
 export async function minifyHtml(text, { removeComments, collapseWhitespace }) {
-  // El contenido de <script> y <style> ya viene minificado (o es una plantilla): se protege tal cual.
-  const raw = [];
-  const nonce = Math.random().toString(36).slice(2, 10);
-  const spans = [];
-  const collect = (n) => {
-    const tag = n.tagName;
-    const loc = n.sourceCodeLocation;
-    if ((tag === 'script' || tag === 'style') && loc?.startTag && loc?.endTag && loc.endTag.startOffset > loc.startTag.endOffset)
-      spans.push([loc.startTag.endOffset, loc.endTag.startOffset]);
-    const kids = tag === 'template' && n.content ? n.content.childNodes : n.childNodes ?? [];
-    for (const k of kids) collect(k);
-  };
-  collect(parse(text, { sourceCodeLocationInfo: true, scriptingEnabled: false }));
-  let protectedText = text;
-  for (const [s, e] of spans.sort((a, b) => b[0] - a[0])) {
-    const token = `__vbraw${nonce}_${raw.length}__`;
-    raw.push([token, text.slice(s, e)]);
-    protectedText = protectedText.slice(0, s) + token + protectedText.slice(e);
-  }
   let out;
   try {
-    out = await minify(protectedText, {
-      collapseWhitespace,
-      conservativeCollapse: true,
-      removeComments,
-      ignoreCustomComments: [/^!/, /^\s*#/, /^\s*\/?ko\b/, /^\s*esi\b/, /^\s*google_ad_section/, /^\s*(?:build|endbuild)\b/],
-      processConditionalComments: false,
-      // Sin esto el minificador convierte `defer` en `defer="defer"`.
-      collapseBooleanAttributes: true,
-      removeAttributeQuotes: false,
-      removeRedundantAttributes: false,
-      removeScriptTypeAttributes: false,
-      removeStyleLinkTypeAttributes: false,
-      removeEmptyAttributes: false,
-      removeEmptyElements: false,
-      removeOptionalTags: false,
-      removeTagWhitespace: false,
-      useShortDoctype: false,
-      decodeEntities: false,
-      keepClosingSlash: true,
-      caseSensitive: true,
-      minifyCSS: false,
-      minifyJS: false,
-      minifyURLs: false,
-      sortAttributes: false,
-      sortClassName: false,
-      includeAutoGeneratedTags: false,
-      continueOnParseError: true,
-      html5: true,
-    });
+    out = applyEdits(text, minifyEdits(text, { removeComments, collapseWhitespace }));
   } catch (err) {
-    return { code: text, note: `no se pudo minificar el HTML (${String(err.message).split('\n')[0]})` };
-  }
-  for (const [token, content] of raw) {
-    const at = out.indexOf(token);
-    if (at === -1 || out.indexOf(token, at + 1) !== -1) return { code: text, note: 'no se pudo proteger un <script>/<style>; se deja sin minificar' };
-    out = out.slice(0, at) + content + out.slice(at + token.length);
+    return { code: text, note: `no se pudo minificar el HTML (${err.message})` };
   }
   const before = htmlSignature(text);
   const after = htmlSignature(out);
@@ -367,4 +335,112 @@ export async function minifyHtml(text, { removeComments, collapseWhitespace }) {
     return { code: text, note: `la minificación cambiaba la estructura cerca de «${near}»; se deja sin minificar` };
   }
   return { code: out };
+}
+
+// Comentarios con significado: importantes (<!--!), SSI, condicionales de IE, Knockout, ESI...
+const KEEP_COMMENT = /^(?:!|\s*#|\[if\s|<!\[endif\]|\[endif\]|\s*\/?ko\b|\s*esi\b|\s*google_ad_section|\s*(?:build|endbuild)\b)/i;
+// Su contenido se muestra (o se interpreta) tal cual: nunca se tocan sus espacios.
+const RAW_PARENTS = new Set(['pre', 'textarea', 'script', 'style', 'xmp', 'plaintext', 'listing', 'iframe', 'noembed', 'noframes']);
+const HTML_NS = 'http://www.w3.org/1999/xhtml';
+const UNQUOTED_OK = /^[^ \t\n\f\r"'`=<>]+$/;
+const ATTR_RE = /^([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))$/s;
+
+/** Calcula las ediciones de minificación sobre el texto original (posiciones de parse5). */
+function minifyEdits(text, { removeComments, collapseWhitespace }) {
+  const doc = parse(text, { sourceCodeLocationInfo: true, scriptingEnabled: false });
+  const edits = [];
+
+  const rebuildStartTag = (el) => {
+    const loc = el.sourceCodeLocation;
+    const st = loc.startTag;
+    const raw = text.slice(st.startOffset, st.endOffset);
+    const nameRaw = raw.slice(1).match(/^[^\s/>]+/)?.[0];
+    if (!nameRaw) return;
+    const attrLocs = Object.values(st.attrs ?? {}).sort((a, b) => a.startOffset - b.startOffset);
+    // Si el texto de la etiqueta tiene algo que parse5 no registró (atributos duplicados), no se toca.
+    let check = st.startOffset + 1 + nameRaw.length;
+    for (const a of attrLocs) {
+      if (text.slice(check, a.startOffset).trim()) return;
+      check = a.endOffset;
+    }
+    const tail = text.slice(check, st.endOffset).replace(/\s+/g, '');
+    if (tail !== '>' && tail !== '/>') return;
+    const isHtml = el.namespaceURI === HTML_NS;
+    let out = `<${nameRaw}`;
+    let lastUnquoted = false;
+    for (const a of attrLocs) {
+      const src = text.slice(a.startOffset, a.endOffset);
+      const m = ATTR_RE.exec(src);
+      lastUnquoted = false;
+      if (!m) {
+        out += ` ${src}`; // atributo sin valor
+        continue;
+      }
+      const [, name, dq, sq, uq] = m;
+      const value = dq ?? sq ?? uq;
+      const lower = name.toLowerCase();
+      if (isHtml && BOOLEAN_ATTRS.has(lower) && (value === '' || value.toLowerCase() === lower)) out += ` ${name}`;
+      else if (value !== '' && UNQUOTED_OK.test(value)) {
+        out += ` ${name}=${value}`;
+        lastUnquoted = true;
+      } else out += ` ${name}=${dq != null || uq != null ? `"${value}"` : `'${value}'`}`;
+    }
+    out += tail === '/>' ? (lastUnquoted ? ' />' : '/>') : '>';
+    if (out !== raw) edits.push({ start: st.startOffset, end: st.endOffset, text: out });
+    const et = loc.endTag;
+    if (et) {
+      const end = text.slice(et.startOffset, et.endOffset);
+      const m = /^<\/([^\s>]+)\s*>$/.exec(end);
+      if (m && end !== `</${m[1]}>`) edits.push({ start: et.startOffset, end: et.endOffset, text: `</${m[1]}>` });
+    }
+  };
+
+  const visit = (node, raw) => {
+    const kids = node.nodeName === 'template' && node.content ? node.content.childNodes : (node.childNodes ?? []);
+    const parentTag = node.nodeName;
+    // ¿Lo último que queda en la salida termina en espacio? (los comentarios quitados no cuentan)
+    let prevSpace = false;
+    for (const k of kids) {
+      const loc = k.sourceCodeLocation;
+      if (k.nodeName === '#comment') {
+        if (loc && removeComments && !KEEP_COMMENT.test(k.data)) {
+          edits.push({ start: loc.startOffset, end: loc.endOffset, text: '' });
+          continue;
+        }
+        prevSpace = false;
+        continue;
+      }
+      if (k.nodeName === '#text') {
+        if (!loc || raw || !collapseWhitespace) {
+          prevSpace = false;
+          continue;
+        }
+        const src = text.slice(loc.startOffset, loc.endOffset);
+        let t = src.replace(/[ \t\n\r\f]+/g, ' ');
+        if (!t.trim() && (parentTag === 'html' || parentTag === 'head' || parentTag === '#document')) t = '';
+        else if (prevSpace && t.startsWith(' ')) t = t.slice(1);
+        if (t !== src) edits.push({ start: loc.startOffset, end: loc.endOffset, text: t });
+        prevSpace = t ? t.endsWith(' ') : prevSpace;
+        continue;
+      }
+      prevSpace = false;
+      if (k.nodeName === '#documentType' || !k.tagName) continue;
+      if (loc?.startTag) rebuildStartTag(k);
+      visit(k, raw || RAW_PARENTS.has(k.tagName));
+    }
+  };
+  visit(doc, false);
+  // Espacios antes de <html> y entre <html> y <head>: el parser los descarta (no son nodos).
+  if (collapseWhitespace) {
+    const dt = doc.childNodes.find((n) => n.nodeName === '#documentType')?.sourceCodeLocation;
+    const html = doc.childNodes.find((n) => n.nodeName === 'html');
+    const head = html?.childNodes.find((n) => n.nodeName === 'head');
+    const gap = (start, end) => {
+      if (start != null && end != null && end > start && !text.slice(start, end).trim()) edits.push({ start, end, text: '' });
+    };
+    if (dt && html?.sourceCodeLocation?.startTag) gap(dt.endOffset, html.sourceCodeLocation.startTag.startOffset);
+    if (html?.sourceCodeLocation?.startTag && head?.sourceCodeLocation?.startTag)
+      gap(html.sourceCodeLocation.startTag.endOffset, head.sourceCodeLocation.startTag.startOffset);
+  }
+  return edits;
 }

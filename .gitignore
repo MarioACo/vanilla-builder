@@ -1,0 +1,4 @@
+# Solo el node_modules de la raíz: los fixtures de prueba incluyen uno propio a propósito.
+/node_modules/
+dist/
+*.log

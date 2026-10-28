@@ -2,21 +2,67 @@
   "name": "vanilla-builder",
   "version": "0.1.0",
   "private": true,
+  "description": "Empaqueta, minifica y ofusca proyectos web vanilla (HTML, CSS y JS) sin perder nada: detecta dependencias, verifica la salida y nunca borra lo que no creó.",
   "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "builder": "bin/builder.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/unit.test.js test/build.test.js",
+    "test:browser": "node --test test/browser.test.js",
+    "test:node16": "node test/unit.test.js && node test/build.test.js",
+    "check": "node --test test/unit.test.js test/build.test.js test/browser.test.js"
+  },
+  "keywords": [
+    "bundler",
+    "minify",
+    "obfuscate",
+    "obfuscator",
+    "vanilla",
+    "html",
+    "css",
+    "javascript",
+    "build",
+    "esbuild"
+  ],
+  "author": "MarioACo",
+  "license": "UNLICENSED",
   "engines": {
-    "node": ">=20"
+    "node": ">=16"
   },
   "dependencies": {
     "acorn": "8.19.0",
     "acorn-walk": "8.3.5",
     "esbuild": "0.28.2",
-    "html-minifier-terser": "7.2.0",
-    "javascript-obfuscator": "5.9.0",
     "parse5": "8.0.1",
     "picomatch": "4.0.7"
   },
+  "peerDependencies": {
+    "javascript-obfuscator": ">=4.1.1 <6",
+    "terser": "^5.31.0"
+  },
+  "peerDependenciesMeta": {
+    "javascript-obfuscator": {
+      "optional": true
+    },
+    "terser": {
+      "optional": true
+    }
+  },
   "devDependencies": {
-    "playwright-core": "1.63.0"
+    "javascript-obfuscator": "5.9.0",
+    "playwright-core": "1.63.0",
+    "terser": "5.51.2"
   },
   "overrides": {
     "zod": "4.6.7"

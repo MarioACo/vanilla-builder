@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BuildError, isInside, retryFs } from './util.js';
+import { BuildError, isInside, retryFs, copyDir } from './util.js';
 
 export const MANIFEST = '.builder-manifest.json';
 
@@ -21,10 +21,9 @@ export function assertSafeOutDir(cfg, { force = false } = {}) {
     if (!fs.statSync(out).isDirectory()) throw new BuildError(`"outDir" existe y no es una carpeta: ${out}`);
     const entries = fs.readdirSync(out);
     if (entries.length && !entries.includes(MANIFEST))
-      throw new BuildError(
-        `La carpeta de salida ${out} ya tiene archivos y no la creó Builder. No la borro para no perder datos.`,
-        ['Elige otra carpeta con --out, vacíala tú mismo o usa --force si estás seguro.'],
-      );
+      throw new BuildError(`La carpeta de salida ${out} ya tiene archivos y no la creó Builder. No la borro para no perder datos.`, [
+        'Elige otra carpeta con --out, vacíala tú mismo o usa --force si estás seguro.',
+      ]);
   }
 }
 
@@ -68,7 +67,7 @@ export async function swapIntoPlace(cfg, staging) {
   const exists = fs.existsSync(out);
   if (exists && !cfg.clean) {
     // Sin limpiar: se copian encima los archivos nuevos y se conserva lo demás.
-    await fs.promises.cp(staging, out, { recursive: true, force: true });
+    await copyDir(staging, out);
     await rmrf(staging);
     return;
   }
@@ -77,7 +76,7 @@ export async function swapIntoPlace(cfg, staging) {
       await retryFs(() => fs.promises.rename(out, old));
     } catch {
       for (const name of await fs.promises.readdir(out)) await rmrf(path.join(out, name));
-      await fs.promises.cp(staging, out, { recursive: true, force: true });
+      await copyDir(staging, out);
       await rmrf(staging);
       return;
     }
@@ -86,7 +85,7 @@ export async function swapIntoPlace(cfg, staging) {
     await retryFs(() => fs.promises.rename(staging, out));
   } catch (err) {
     try {
-      await fs.promises.cp(staging, out, { recursive: true, force: true });
+      await copyDir(staging, out);
       await rmrf(staging);
     } catch (copyErr) {
       if (exists) await retryFs(() => fs.promises.rename(old, out)).catch(() => {});

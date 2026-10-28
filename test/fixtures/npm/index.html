@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Paquetes de npm</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "fake-lib": "./node_modules/fake-lib/index.js",
+        "fake-lib/": "./node_modules/fake-lib/"
+      }
+    }
+  </script>
+  <script src="js/vendor/mini.min.js"></script>
+  <script src="js/app-clasico.js"></script>
+</head>
+<body>
+  <p id="out">npm</p>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

@@ -17,7 +17,12 @@ export function sizesOf(buf, type) {
 /** Filas del informe a partir de las salidas. */
 export function buildReport(outputs) {
   const rows = [];
+  let compressed = 0;
   for (const [rel, o] of outputs) {
+    if (o.type === 'compressed') {
+      compressed++;
+      continue;
+    }
     if (o.copyFrom) {
       rows.push({ file: rel, type: o.type, action: o.action, sources: o.sources, before: o.size, size: o.size, gzip: null, brotli: null });
       continue;
@@ -38,7 +43,7 @@ export function buildReport(outputs) {
     t.before += r.before;
     t.size += r.size;
   }
-  return { rows, totals, byType };
+  return { rows, totals, byType, compressed };
 }
 
 const ORDER = ['html', 'js', 'css', 'json', 'svg', 'text', 'asset'];
@@ -51,17 +56,20 @@ export function renderReport(report, C, { verbose = false } = {}) {
   const lines = [];
   const shown = report.rows.filter((r) => verbose || r.action !== 'copy');
   const hidden = report.rows.filter((r) => !verbose && r.action === 'copy');
-  const w = Math.min(60, Math.max(20, ...shown.map((r) => r.file.length)));
+  const hiddenLabel = `+ ${hidden.length} recursos copiados sin cambios`;
+  const w = Math.min(60, Math.max(20, ...shown.map((r) => r.file.length), hidden.length ? hiddenLabel.length : 0));
   const pad = (s, n) => (s.length > n ? `…${s.slice(-(n - 1))}` : s.padEnd(n));
   const num = (n) => (n == null ? '—' : formatBytes(n)).padStart(10);
-  lines.push(C.gray(`${'Archivo'.padEnd(w)}  ${'Antes'.padStart(10)}  ${'Después'.padStart(10)}  ${'gzip'.padStart(10)}  ${'brotli'.padStart(10)}  Ahorro`));
+  lines.push(
+    C.gray(`${'Archivo'.padEnd(w)}  ${'Antes'.padStart(10)}  ${'Después'.padStart(10)}  ${'gzip'.padStart(10)}  ${'brotli'.padStart(10)}  Ahorro`),
+  );
   for (const r of shown) {
     const src = r.sources && r.sources.length > 1 ? C.gray(` (${r.sources.length} archivos)`) : '';
     lines.push(`${pad(r.file, w)}  ${num(r.before)}  ${num(r.size)}  ${num(r.gzip)}  ${num(r.brotli)}  ${pct(r.before, r.size).padStart(6)}${src}`);
   }
   if (hidden.length) {
     const size = hidden.reduce((a, r) => a + r.size, 0);
-    lines.push(C.gray(`${pad(`+ ${hidden.length} recursos copiados sin cambios`, w)}  ${num(size)}  ${num(size)}`));
+    lines.push(C.gray(`${pad(hiddenLabel, w)}  ${num(size)}  ${num(size)}`));
   }
   const t = report.totals;
   lines.push(

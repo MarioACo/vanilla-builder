@@ -1,13 +1,24 @@
 // Orquestador: descubre dependencias, procesa cada tipo de archivo, verifica y publica la salida.
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { scanProject, matchFiles, globMatcher } from './files.js';
 import { resolveRef, classifyUrl, parseSrcset } from './urls.js';
 import { analyzeJs } from './jsinfo.js';
 import { parseHtml, adjacentSiblings, applyEdits, attrText, escapeInlineScript, escapeInlineStyle, minifyHtml, detectPreWhitespace } from './html.js';
 import { buildCss, minifyStyleAttr } from './css.js';
-import { processClassic, processModuleStandalone, buildModuleGroup, buildModuleWorker, obfuscateModule } from './js.js';
-import { resolveObfuscatorOptions } from './obfuscate.js';
+import {
+  processClassic,
+  processModuleStandalone,
+  buildModuleGroup,
+  buildModuleWorker,
+  obfuscateModule,
+  ensureTerser,
+  terserPass,
+  levelOf,
+} from './js.js';
+import { resolveObfuscatorOptions, ensureObfuscator } from './obfuscate.js';
+import { detectDependency } from './deps.js';
 import { assertSafeOutDir, writeStaging, swapIntoPlace, discardStaging, writeManifest, MANIFEST } from './output.js';
 import { verifyOutput } from './verify.js';
 import { buildReport } from './report.js';
@@ -24,13 +35,26 @@ import {
   sri,
   encodePath,
   minifyJsonText,
+  hasOwn,
 } from './util.js';
 
 export const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const MERGE_ATTRS = new Set(['src', 'type', 'defer', 'charset', 'language']);
 const typeOfExt = (ext) =>
-  HTML_EXT.has(ext) ? 'html' : JS_EXT.has(ext) ? 'js' : CSS_EXT.has(ext) ? 'css' : ext === '.json' || ext === '.webmanifest' ? 'json' : ext === '.svg' ? 'svg' : ['.txt', '.xml', '.md', '.csv'].includes(ext) ? 'text' : 'asset';
+  HTML_EXT.has(ext)
+    ? 'html'
+    : JS_EXT.has(ext)
+      ? 'js'
+      : CSS_EXT.has(ext)
+        ? 'css'
+        : ext === '.json' || ext === '.webmanifest'
+          ? 'json'
+          : ext === '.svg'
+            ? 'svg'
+            : ['.txt', '.xml', '.md', '.csv'].includes(ext)
+              ? 'text'
+              : 'asset';
 
 class Context {
   constructor(cfg, opts) {
@@ -61,7 +85,10 @@ class Context {
     this.pageRefs = new Set();
     this.done = new Set();
     this.obfuscatorOptions = opts.mode === 'analyze' ? null : resolveObfuscatorOptions(cfg.obfuscate);
-    this.obfExcluded = globMatcher(cfg.obfuscateExclude);
+    this.depIncluded = globMatcher(cfg.dependencies.include);
+    this.depExcluded = globMatcher(cfg.dependencies.exclude);
+    this.depCache = new Map();
+    this.vendorPackages = [];
     this.chunkDir = cfg.js.chunkDir.replace(/\/+$/, '');
   }
 
@@ -212,10 +239,25 @@ class Context {
     return !!o && o.sources?.includes(rel);
   }
 
+  /** ¿Es una librería de terceros? (a mano en dependencies.include/exclude, o detectada). */
+  dependencyReason(rel) {
+    if (this.depCache.has(rel)) return this.depCache.get(rel);
+    const deps = this.cfg.dependencies;
+    let reason = null;
+    if (this.depExcluded(rel)) reason = null;
+    else if (this.depIncluded(rel)) reason = 'marcado a mano (dependencies.include)';
+    else if (/(^|\/)node_modules\//.test(rel)) reason = 'paquete de npm';
+    else if (deps.detect && JS_EXT.has(extOf(rel)) && this.files.has(rel)) reason = detectDependency(rel, this.readText(rel, { kind: 'js' }).text);
+    this.depCache.set(rel, reason);
+    return reason;
+  }
+
   shouldObfuscate(rels) {
     if (!this.obfuscatorOptions) return false;
     const list = rels.filter(Boolean);
-    return list.length > 0 && !list.every((r) => this.obfExcluded(r));
+    if (!list.length) return false;
+    if (this.cfg.dependencies.obfuscate) return true;
+    return !list.every((r) => this.dependencyReason(r));
   }
 
   /** Registra un archivo de salida; nunca sobrescribe en silencio un contenido distinto. */
@@ -318,7 +360,10 @@ function loadPages(ctx) {
         ctx.warn(`<base href="${model.base}"> apunta fuera del sitio; sus rutas relativas no se pueden comprobar y se dejan igual.`, rel);
       } else if (c.type === 'root' || c.type === 'relative') {
         const p = c.type === 'root' ? (c.path.startsWith(ctx.base) ? c.path.slice(ctx.base.length) : c.path.slice(1)) : path.posix.join(dir, c.path);
-        page.baseDir = path.posix.normalize(p.endsWith('/') ? p : path.posix.dirname(p)).replace(/^\.$/, '').replace(/\/$/, '');
+        page.baseDir = path.posix
+          .normalize(p.endsWith('/') ? p : path.posix.dirname(p))
+          .replace(/^\.$/, '')
+          .replace(/\/$/, '');
       }
     }
     pages.set(rel, page);
@@ -453,7 +498,7 @@ function classicRuns(ctx, page) {
       runs.push({ items: [cand], names: null });
       continue;
     }
-    if (current && current.key === key && adjacentSiblings(current.items.at(-1).s, s) && !conflicts(current.names, info.top)) {
+    if (current && current.key === key && adjacentSiblings(current.items[current.items.length - 1].s, s) && !conflicts(current.names, info.top)) {
       current.items.push(cand);
       for (const [n, k] of info.top) if (!current.names.has(n) || k === 'lex') current.names.set(n, k);
     } else {
@@ -490,6 +535,8 @@ export async function runPipeline(cfg, opts = {}) {
   if (mode === 'build') assertSafeOutDir(cfg, { force: opts.force });
   const ctx = new Context(cfg, { ...opts, mode });
   const log = opts.log ?? (() => {});
+  if (ctx.obfuscatorOptions) await ensureObfuscator(cfg.root);
+  if (cfg.js.minifier === 'terser' && cfg.js.minify) await ensureTerser(cfg.root);
 
   // 1. Páginas y entradas
   const pages = loadPages(ctx);
@@ -514,6 +561,7 @@ export async function runPipeline(cfg, opts = {}) {
         virtual: new Map(),
         pages: new Set(),
         forcePerFile: importMap?.scopes ? 'el import map usa "scopes"' : null,
+        vendorSplit: !!ctx.obfuscatorOptions && !cfg.dependencies.obfuscate,
       });
     return groups.get(key);
   };
@@ -539,13 +587,28 @@ export async function runPipeline(cfg, opts = {}) {
       } else if (s.inline && s.inline.code.trim()) {
         const id = `vb-inline:${page.rel}#${vIndex++}`;
         const outDir = page.baseDir ? `${page.baseDir}/` : '';
-        g.virtual.set(id, { code: s.inline.code, label: `${page.rel} (módulo inline ${vIndex})`, baseDir: page.baseDir, out: `${outDir}__vb_inline_${shortHash(id)}`, page, s });
+        g.virtual.set(id, {
+          code: s.inline.code,
+          label: `${page.rel} (módulo inline ${vIndex})`,
+          baseDir: page.baseDir,
+          out: `${outDir}__vb_inline_${shortHash(id)}`,
+          page,
+          s,
+        });
       }
     }
     for (const l of page.model.links) if (l.type === 'preload') preloadLinks.push({ page, l });
   }
   if (extra.modules.length) {
-    const g = { key: '\0entries', importMap: null, hash: false, entries: new Set(extra.modules), virtual: new Map(), pages: new Set(), forcePerFile: null };
+    const g = {
+      key: '\0entries',
+      importMap: null,
+      hash: false,
+      entries: new Set(extra.modules),
+      virtual: new Map(),
+      pages: new Set(),
+      forcePerFile: null,
+    };
     groups.set(g.key, g);
   }
   const entryOut = new Map(); // `${groupKey}\0${rel}` → outRel
@@ -574,11 +637,17 @@ export async function runPipeline(cfg, opts = {}) {
       let code = o.code;
       let map = o.map;
       const obfRels = o.virtualId ? [g.virtual.get(o.virtualId).page.rel] : o.isChunk ? o.inputs : [o.entry];
-      if (ctx.shouldObfuscate(obfRels)) {
+      if (!o.isVendor && ctx.shouldObfuscate(obfRels)) {
         const r = obfuscateModule(ctx, code, o.outRel);
         if (r.note) ctx.warn(r.note, o.outRel);
         else {
           code = r.code;
+          map = null;
+        }
+      } else {
+        const t = await terserPass(ctx, code, { isModule: true, level: levelOf(res.target) });
+        if (t !== code) {
+          code = t;
           map = null;
         }
       }
@@ -588,20 +657,28 @@ export async function runPipeline(cfg, opts = {}) {
         for (const rel of o.inputs) ctx.cover(rel, 'empaquetado', `${v.page.rel} (módulo inline)`);
         continue;
       }
-      const outRel = ctx.emitCode(o.outRel, code, map, { type: 'js', module: true, action: o.isChunk ? 'chunk' : 'bundle', sources, before: sumSizes(ctx, sources) });
+      const action = o.isVendor ? 'vendor' : o.isChunk ? 'chunk' : 'bundle';
+      const outRel = ctx.emitCode(o.outRel, code, map, { type: 'js', module: true, action, sources, before: o.before || sumSizes(ctx, sources) });
       if (o.entry) entryOut.set(`${g.key}\0${o.entry}`, outRel);
-      for (const rel of o.inputs) ctx.cover(rel, 'empaquetado', outRel);
+      for (const rel of o.inputs) ctx.cover(rel, o.isVendor ? 'empaquetado (dependencia, sin ofuscar)' : 'empaquetado', outRel);
+    }
+    for (const spec of res.vendor) if (!ctx.vendorPackages.includes(spec)) ctx.vendorPackages.push(spec);
+    // esbuild puede incrustar un módulo entero (p. ej. constantes) sin que figure en ninguna salida.
+    for (const rel of res.consumed) {
+      if (!ctx.coverage.get(rel)?.some((s) => s.startsWith('empaquetado'))) ctx.cover(rel, 'empaquetado (incrustado por completo en el paquete)');
     }
   }
 
   // 3. CSS enlazado
   const cssOut = new Map();
   const cssEntries = new Set(extra.css);
-  for (const page of fullPages) for (const l of page.model.links) if (l.type === 'stylesheet') {
-    const res = ctx.resolve(l.href.value, page.baseDir);
-    if (res.status === 'ok') cssEntries.add(res.rel);
-    else if (res.status !== 'skip') ctx.reportBroken(page.rel, l.href.value, res);
-  }
+  for (const page of fullPages)
+    for (const l of page.model.links)
+      if (l.type === 'stylesheet') {
+        const res = ctx.resolve(l.href.value, page.baseDir);
+        if (res.status === 'ok') cssEntries.add(res.rel);
+        else if (res.status !== 'skip') ctx.reportBroken(page.rel, l.href.value, res);
+      }
   for (const rel of cssEntries) {
     const hashed = cfg.hash && !extra.css.includes(rel);
     const provisional = hashed ? `${ctx.chunkDir}/${path.posix.basename(rel)}` : rel;
@@ -625,7 +702,10 @@ export async function runPipeline(cfg, opts = {}) {
     for (const p of pages.values()) htmlBlob.push(...p.model.styles.map((s) => s.code), ...p.model.styleAttrs.map((s) => s.value));
     const pre = detectPreWhitespace(cssText.join('\n') + htmlBlob.join('\n'));
     collapse = !pre;
-    if (pre) ctx.note('se usa white-space: pre/pre-wrap/pre-line en el CSS; el HTML no colapsa espacios para no alterar ningún texto (html.collapseWhitespace: true lo fuerza)');
+    if (pre)
+      ctx.note(
+        'se usa white-space: pre/pre-wrap/pre-line en el CSS; el HTML no colapsa espacios para no alterar ningún texto (html.collapseWhitespace: true lo fuerza)',
+      );
   }
 
   // 5. Scripts clásicos por página
@@ -647,7 +727,8 @@ export async function runPipeline(cfg, opts = {}) {
       } else {
         run.items.forEach((c, i) => {
           const o = out.outs[i];
-          if (o.outRel !== c.rel) page.edits.push({ start: c.s.src.start, end: c.s.src.end, text: attrText('src', urlFor(ctx, page, c.s.src.value, o.outRel)) });
+          if (o.outRel !== c.rel)
+            page.edits.push({ start: c.s.src.start, end: c.s.src.end, text: attrText('src', urlFor(ctx, page, c.s.src.value, o.outRel)) });
           if (o.changed) setIntegrity(ctx, page, c.s, 'src', ctx.outputBytes(o.outRel));
         });
       }
@@ -660,7 +741,8 @@ export async function runPipeline(cfg, opts = {}) {
     for (const m of moduleRefs.filter((x) => x.page === page)) {
       const outRel = entryOut.get(`${m.group.key}\0${m.rel}`);
       if (!outRel) continue;
-      if (outRel !== m.rel) page.edits.push({ start: m.s.src.start, end: m.s.src.end, text: attrText('src', urlFor(ctx, page, m.s.src.value, outRel)) });
+      if (outRel !== m.rel)
+        page.edits.push({ start: m.s.src.start, end: m.s.src.end, text: attrText('src', urlFor(ctx, page, m.s.src.value, outRel)) });
       if (ctx.outputs.has(outRel)) setIntegrity(ctx, page, m.s, 'src', ctx.outputBytes(outRel));
     }
     for (const l of page.model.links) {
@@ -668,7 +750,8 @@ export async function runPipeline(cfg, opts = {}) {
       const res = ctx.resolve(l.href.value, page.baseDir);
       if (res.status !== 'ok' || !cssOut.has(res.rel)) continue;
       const outRel = cssOut.get(res.rel);
-      if (outRel !== res.rel) page.edits.push({ start: l.href.start, end: l.href.end, text: attrText('href', urlFor(ctx, page, l.href.value, outRel)) });
+      if (outRel !== res.rel)
+        page.edits.push({ start: l.href.start, end: l.href.end, text: attrText('href', urlFor(ctx, page, l.href.value, outRel)) });
       setIntegrity(ctx, page, l, 'href', ctx.outputBytes(outRel));
     }
     for (const [id, v] of [...groups.values()].flatMap((g) => [...g.virtual.entries()])) {
@@ -702,7 +785,10 @@ export async function runPipeline(cfg, opts = {}) {
   for (const { page, l } of preloadLinks) {
     const res = ctx.resolve(l.href.value, page.baseDir);
     if (res.status !== 'ok') continue;
-    const target = cssOut.get(res.rel) ?? [...entryOut.entries()].find(([k]) => k.endsWith(`\0${res.rel}`))?.[1] ?? (ctx.hasOwnOutput(res.rel) || ctx.assets.has(res.rel) ? res.rel : null);
+    const target =
+      cssOut.get(res.rel) ??
+      [...entryOut.entries()].find(([k]) => k.endsWith(`\0${res.rel}`))?.[1] ??
+      (ctx.hasOwnOutput(res.rel) || ctx.assets.has(res.rel) ? res.rel : null);
     if (target == null) {
       page.edits.push({ start: l.start, end: l.end, text: '' });
       ctx.note(`se quita <link rel="${l.rels.join(' ')}" href="${l.href.value}">: ese archivo ahora va dentro de un paquete`, page.rel);
@@ -765,6 +851,9 @@ export async function runPipeline(cfg, opts = {}) {
     }
   }
 
+  // 12. Precompresión .gz / .br para servidores que sirven archivos comprimidos (nginx gzip_static, etc.)
+  if (cfg.compress && mode === 'build') precompress(ctx, cfg.compress === true ? ['gzip', 'brotli'] : [cfg.compress]);
+
   const result = {
     version: VERSION,
     root: cfg.root,
@@ -779,6 +868,11 @@ export async function runPipeline(cfg, opts = {}) {
     notes: ctx.notes,
     workers: [...ctx.workers.entries()].map(([rel, w]) => ({ rel, ...w })),
     standalone: [...ctx.standalone.entries()].map(([rel, s]) => ({ rel, reason: s.reason })),
+    dependencies: [...ctx.files.keys()]
+      .filter((rel) => JS_EXT.has(extOf(rel)) && ctx.dependencyReason(rel))
+      .map((rel) => ({ rel, reason: ctx.dependencyReason(rel) })),
+    vendor: ctx.vendorPackages,
+    obfuscated: !!ctx.obfuscatorOptions,
     report: buildReport(ctx.outputs),
     verify: null,
     durationMs: 0,
@@ -814,6 +908,30 @@ export async function runPipeline(cfg, opts = {}) {
   return result;
 }
 
+const COMPRESS_TYPES = new Set(['html', 'css', 'js', 'json', 'svg', 'text', 'map']);
+
+function precompress(ctx, kinds) {
+  for (const [rel, o] of [...ctx.outputs]) {
+    if (!COMPRESS_TYPES.has(o.type)) continue;
+    const buf = o.copyFrom ? fs.readFileSync(o.copyFrom) : o.data;
+    if (buf.length < 1024) continue; // no compensa
+    if (kinds.includes('gzip')) {
+      const gz = zlib.gzipSync(buf, { level: 9 });
+      if (gz.length < buf.length) ctx.emit(`${rel}.gz`, gz, { type: 'compressed', action: 'gzip', sources: o.sources });
+    }
+    if (kinds.includes('brotli')) {
+      const br = zlib.brotliCompressSync(buf, {
+        params: {
+          [zlib.constants.BROTLI_PARAM_QUALITY]: 11,
+          [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT,
+          [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length,
+        },
+      });
+      if (br.length < buf.length) ctx.emit(`${rel}.br`, br, { type: 'compressed', action: 'brotli', sources: o.sources });
+    }
+  }
+}
+
 function sumSizes(ctx, rels) {
   return rels.reduce((a, r) => a + (ctx.files.get(r)?.size ?? 0), 0);
 }
@@ -822,7 +940,7 @@ function markModuleImport(ctx, spec, baseDir, from, importMap) {
   const c = classifyUrl(spec);
   if (c.type !== 'root' && c.type !== 'relative') {
     if (importMap?.imports && c.type !== 'external') {
-      const target = Object.hasOwn(importMap.imports, spec)
+      const target = hasOwn(importMap.imports, spec)
         ? importMap.imports[spec]
         : Object.keys(importMap.imports)
             .filter((k) => k.endsWith('/') && spec.startsWith(k))
@@ -859,7 +977,10 @@ async function processClassicRun(ctx, run, page) {
         type: 'js',
         action: 'merge',
         sources: items.map((c) => c.rel),
-        before: sumSizes(ctx, items.map((c) => c.rel)),
+        before: sumSizes(
+          ctx,
+          items.map((c) => c.rel),
+        ),
       });
       for (const c of items) ctx.cover(c.rel, 'unido', outRel);
       return { merged: true, outRel };
@@ -903,14 +1024,21 @@ async function processInline(ctx, page) {
       ctx.noteJsInfo(page.rel, info, page.baseDir);
       const r = await processClassic(ctx, { code: s.inline.code, id: `${page.rel}#inline`, info, obfuscate: ctx.shouldObfuscate([page.rel]) });
       for (const n of r.notes) ctx.note(`script inline: ${n}`, page.rel);
-      if (r.code !== s.inline.code) page.edits.push({ start: s.inline.start, end: s.inline.end, text: escapeInlineScript(r.code) });
+      if (r.code !== s.inline.code)
+        page.edits.push({ start: s.inline.start, end: s.inline.end, text: escapeInlineScript(r.code.replace(/\n$/, '')) });
     } else if (s.kind === 'module' && !page.full) {
       const info = analyzeJs(s.inline.code, { module: true });
       if (!info.ok) continue;
       ctx.noteJsInfo(page.rel, info, page.baseDir);
       for (const imp of info.imports) if (imp.spec) markModuleImport(ctx, imp.spec, page.baseDir, page.rel, null);
-      const r = await processModuleStandalone(ctx, { code: s.inline.code, id: `${page.rel}#module`, info, obfuscate: ctx.shouldObfuscate([page.rel]) });
-      if (r.code !== s.inline.code) page.edits.push({ start: s.inline.start, end: s.inline.end, text: escapeInlineScript(r.code) });
+      const r = await processModuleStandalone(ctx, {
+        code: s.inline.code,
+        id: `${page.rel}#module`,
+        info,
+        obfuscate: ctx.shouldObfuscate([page.rel]),
+      });
+      if (r.code !== s.inline.code)
+        page.edits.push({ start: s.inline.start, end: s.inline.end, text: escapeInlineScript(r.code.replace(/\n$/, '')) });
     } else if ((s.kind === 'json' || s.kind === 'importmap') && cfg.json.minify) {
       const min = minifyJsonText(s.inline.code.trim());
       if (min != null && min !== s.inline.code) page.edits.push({ start: s.inline.start, end: s.inline.end, text: escapeInlineScript(min) });
@@ -927,7 +1055,10 @@ async function processInline(ctx, page) {
   if (cfg.css.minify) {
     for (const st of page.model.styles) {
       if (!st.code.trim()) continue;
-      const r = await buildCss(ctx, { inline: { code: st.code, baseDir: page.baseDir, label: `${page.rel} (<style>)` }, outRel: page.baseDir ? `${page.baseDir}/__page.html` : '__page.html' });
+      const r = await buildCss(ctx, {
+        inline: { code: st.code, baseDir: page.baseDir, label: `${page.rel} (<style>)` },
+        outRel: page.baseDir ? `${page.baseDir}/__page.html` : '__page.html',
+      });
       if (r.error) {
         ctx.note(`un <style> no se pudo minificar (${r.error.split('\n')[0]}); se deja igual`, page.rel);
         continue;
@@ -976,7 +1107,8 @@ async function drainQueues(ctx, cssOut) {
     // Rutas mencionadas como texto (precache de service workers, fetch...) que fueron empaquetadas.
     for (const [rel] of ctx.mentions) {
       const ext = extOf(rel);
-      if ((JS_EXT.has(ext) || CSS_EXT.has(ext)) && !ctx.hasOwnOutput(rel) && !ctx.standalone.has(rel)) ctx.requireStandalone(rel, `mencionado como texto en ${ctx.mentions.get(rel)}`);
+      if ((JS_EXT.has(ext) || CSS_EXT.has(ext)) && !ctx.hasOwnOutput(rel) && !ctx.standalone.has(rel))
+        ctx.requireStandalone(rel, `mencionado como texto en ${ctx.mentions.get(rel)}`);
       else if (!JS_EXT.has(ext) && !CSS_EXT.has(ext) && !HTML_EXT.has(ext)) ctx.registerAsset(rel, ctx.mentions.get(rel));
     }
     for (const [rel, w] of ctx.workers) {
@@ -996,9 +1128,15 @@ async function drainQueues(ctx, cssOut) {
           const o = obfuscateModule(ctx, code, rel);
           if (o.note) ctx.warn(o.note, rel);
           code = o.code;
-        }
+        } else code = await terserPass(ctx, code, { isModule: true, level: 2020 });
         const sources = [...r.consumed];
-        ctx.emitCode(rel, code, code === r.code ? r.map : null, { type: 'js', module: true, action: 'worker', sources, before: sumSizes(ctx, sources) });
+        ctx.emitCode(rel, code, code === r.code ? r.map : null, {
+          type: 'js',
+          module: true,
+          action: 'worker',
+          sources,
+          before: sumSizes(ctx, sources),
+        });
         for (const s of sources) ctx.cover(s, s === rel ? 'procesado (worker)' : 'empaquetado', rel);
       } else ctx.requireStandalone(rel, `worker clásico (${w.kind})`, { classic: true });
     }

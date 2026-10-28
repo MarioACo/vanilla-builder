@@ -58,7 +58,8 @@ function jsImports(code, isModule) {
   const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: isModule ? 'module' : 'script', allowHashBang: true });
   const out = [];
   walk.full(ast, (n) => {
-    if ((n.type === 'ImportDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'ExportNamedDeclaration') && n.source) out.push(n.source.value);
+    if ((n.type === 'ImportDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'ExportNamedDeclaration') && n.source)
+      out.push(n.source.value);
     if (n.type === 'ImportExpression' && n.source.type === 'Literal' && typeof n.source.value === 'string') out.push(n.source.value);
   });
   return out;
@@ -87,7 +88,8 @@ export async function verifyOutput(staging, outputs, ctx) {
         if (!info.path.startsWith(ctx.cfg.base)) continue;
         rel = info.path.slice(ctx.cfg.base.length);
       } else rel = path.posix.normalize(path.posix.join(baseDir || '.', info.path));
-      rel = rel.replace(/^\.\/?/, '');
+      if (rel === '.' || rel === './') rel = '';
+      if (rel === '..' || rel.startsWith('../')) continue; // fuera del sitio: no se puede comprobar
       const candidates = rel === '' || rel.endsWith('/') ? [`${rel}index.html`] : page ? [rel, `${rel}/index.html`, `${rel}.html`] : [rel];
       if (candidates.some(exists)) continue;
       const ci = candidates.map((c) => lower.get(c.toLowerCase())).find(Boolean);

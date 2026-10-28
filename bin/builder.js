@@ -7,6 +7,7 @@ import { loadConfig, findConfigFile } from '../src/config.js';
 import { runPipeline, VERSION } from '../src/builder.js';
 import { renderReport } from '../src/report.js';
 import { startServer } from '../src/server.js';
+import { watchTree } from '../src/watch.js';
 import { BuildError, formatBytes, relFrom, isInside } from '../src/util.js';
 
 const tty = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -28,7 +29,13 @@ Opciones de build:
   --entry <archivo>        Entrada explícita (repetible). Por defecto: todos los .html completos
   --include <patrón>       Fuerza incluir archivos (repetible), ej. "data/**"
   --ignore <patrón>        Excluye archivos (repetible), ej. "borradores/**"
-  --obfuscate [nivel]      Ofusca el JS: low | medium | high (por defecto medium)
+  --obfuscate [nivel]      Ofusca tu JS: low | medium | high | max (por defecto medium)
+                           Las librerías de terceros se detectan solas y NO se ofuscan.
+  --dep <patrón>           Marca a mano archivos como dependencia (no se ofuscan), repetible
+  --not-dep <patrón>       Corrige la detección: ese archivo es tuyo y sí se ofusca, repetible
+  --obfuscate-deps         Ofusca también las dependencias
+  --minifier terser        Compresión máxima del JS con una segunda pasada de terser
+  --compress [gzip|brotli] Genera además .gz y .br precomprimidos (por defecto ambos)
   --hash                   Nombres con hash en JS/CSS (caché a largo plazo)
   --sourcemap [modo]       Genera source maps (linked | hidden | inline)
   --target <target>        Navegadores/ES de salida, ej. es2018 (por defecto: el del propio código)
@@ -46,9 +53,23 @@ Opciones de build:
 `;
 
 function parseArgs(argv) {
-  const args = { _: [], entry: [], include: [], ignore: [] };
-  const takesValue = new Set(['out', 'config', 'entry', 'include', 'ignore', 'target', 'unreferenced', 'base', 'port', 'host']);
-  const optionalValue = { obfuscate: ['low', 'medium', 'high'], sourcemap: ['linked', 'hidden', 'inline'] };
+  const args = { _: [], entry: [], include: [], ignore: [], dep: [], 'not-dep': [] };
+  const takesValue = new Set([
+    'out',
+    'config',
+    'entry',
+    'include',
+    'ignore',
+    'target',
+    'unreferenced',
+    'base',
+    'port',
+    'host',
+    'dep',
+    'not-dep',
+    'minifier',
+  ]);
+  const optionalValue = { obfuscate: ['low', 'medium', 'high', 'max'], sourcemap: ['linked', 'hidden', 'inline'], compress: ['gzip', 'brotli'] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!a.startsWith('--')) {
@@ -82,10 +103,18 @@ function overridesFrom(args) {
   if (args.unreferenced) o.unreferenced = args.unreferenced;
   if (args.base) o.base = args.base;
   if (args.verify === false) o.verify = false;
+  if (args.compress !== undefined) o.compress = args.compress;
+  const deps = {};
+  if (args.dep.length) deps.include = args.dep;
+  if (args['not-dep'].length) deps.exclude = args['not-dep'];
+  if (args['obfuscate-deps']) deps.obfuscate = true;
+  if (args['detect-deps'] === false) deps.detect = false;
+  if (Object.keys(deps).length) o.dependencies = deps;
   const js = {};
   if (args.target) js.target = args.target;
   if (args['drop-console']) js.drop = ['console', 'debugger'];
   if (args.merge === false) js.mergeClassic = false;
+  if (args.minifier) js.minifier = args.minifier;
   if (args.minify === false) {
     js.minify = false;
     o.css = { minify: false };
@@ -117,6 +146,8 @@ function jsonResult(result) {
     broken: result.broken,
     workers: result.workers,
     standalone: result.standalone,
+    dependencies: result.dependencies,
+    vendor: result.vendor,
     warnings: result.warnings,
     notes: result.notes,
     verify: result.verify && { errors: result.verify.errors, stats: result.verify.stats },
@@ -135,10 +166,23 @@ function printSummary(result, args) {
     console.log(`${C.green('✔')} Verificación: ${s.files} archivos escritos, ${s.refs} referencias comprobadas, ${s.js} JS válidos, 0 errores`);
   }
   console.log(`${C.green('✔')} Cobertura: ${result.coverage.size}/${result.coverage.size} archivos de origen con destino conocido`);
+  if (r.compressed) console.log(`${C.green('✔')} ${r.compressed} archivos precomprimidos (.gz/.br)`);
+  if (result.obfuscated) {
+    const deps = [
+      ...result.dependencies.map((d) => `${d.rel} — ${d.reason}`),
+      ...result.vendor.map((v) => `${v} — paquete importado (archivo vendor aparte)`),
+    ];
+    if (deps.length) printList('Dependencias detectadas (no se ofuscan)', deps, C.cyan);
+  }
   printList('Avisos', result.warnings, C.yellow);
   if (args.verbose) {
     printList('Notas', result.notes, C.cyan, 200);
-    printList('Excluidos', result.ignored.map((i) => `${i.rel} — ${i.reason}`), C.gray, 200);
+    printList(
+      'Excluidos',
+      result.ignored.map((i) => `${i.rel} — ${i.reason}`),
+      C.gray,
+      200,
+    );
   } else if (result.notes.length) console.log(C.gray(`\n${result.notes.length} nota(s) informativas: usa --verbose para verlas.`));
 }
 
@@ -161,7 +205,8 @@ async function cmdAnalyze(dir, args) {
   }
   console.log(`${C.bold(`Builder ${VERSION} — análisis`)}  ${cfg.root}\n`);
   console.log(`${C.bold('Páginas completas')}: ${result.pages.full.join(', ') || '—'}`);
-  if (result.pages.conservative.length) console.log(`${C.bold('Modo conservador')} (fragmentos u otras codificaciones): ${result.pages.conservative.join(', ')}`);
+  if (result.pages.conservative.length)
+    console.log(`${C.bold('Modo conservador')} (fragmentos u otras codificaciones): ${result.pages.conservative.join(', ')}`);
   console.log(`\n${C.bold('Qué pasará con cada archivo del proyecto')}`);
   const rows = [...result.coverage.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   const w = Math.min(50, Math.max(...rows.map(([k]) => k.length), 10));
@@ -172,10 +217,26 @@ async function cmdAnalyze(dir, args) {
   }
   const copied = rows.filter(([rel, list]) => list.length === 1 && list[0] === `copiado → ${rel}`).length;
   if (copied && !args.verbose) console.log(C.gray(`  + ${copied} recursos que se copian sin cambios (--verbose para listarlos)`));
-  if (result.workers.length) printList('Workers detectados', result.workers.map((wk) => `${wk.rel} (${wk.kind}${wk.module ? ', módulo' : ''}) desde ${wk.from}`), C.cyan);
-  printList('Referencias rotas en el código fuente', result.broken.map((b) => `${b.from} → ${b.url} (${b.status})`), C.yellow);
+  const deps = [...result.dependencies.map((d) => `${d.rel} — ${d.reason}`)];
+  printList('Dependencias de terceros detectadas (no se ofuscan)', deps, C.cyan);
+  if (result.workers.length)
+    printList(
+      'Workers detectados',
+      result.workers.map((wk) => `${wk.rel} (${wk.kind}${wk.module ? ', módulo' : ''}) desde ${wk.from}`),
+      C.cyan,
+    );
+  printList(
+    'Referencias rotas en el código fuente',
+    result.broken.map((b) => `${b.from} → ${b.url} (${b.status})`),
+    C.yellow,
+  );
   printList('Avisos', result.warnings, C.yellow);
-  printList('Excluidos', result.ignored.map((i) => `${i.rel} — ${i.reason}`), C.gray, args.verbose ? 500 : 15);
+  printList(
+    'Excluidos',
+    result.ignored.map((i) => `${i.rel} — ${i.reason}`),
+    C.gray,
+    args.verbose ? 500 : 15,
+  );
   if (args.verbose) printList('Notas', result.notes, C.cyan, 500);
   const t = result.report.totals;
   console.log(`\nSalida prevista: ${t.files} archivos, ${formatBytes(t.before)} → ${formatBytes(t.size)} (sin ofuscar). Nada se escribió.`);
@@ -194,16 +255,21 @@ async function cmdInit(dir, args) {
     ignore: [],
     unreferenced: 'process',
     obfuscate: false,
+    dependencies: { detect: true, obfuscate: false, include: [], exclude: [] },
     hash: false,
     sourcemap: false,
-    js: { target: 'auto', drop: [] },
+    compress: false,
+    js: { target: 'auto', minifier: 'esbuild', drop: [] },
   };
   const file = path.join(projectDir, 'builder.config.json');
   fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
   console.log(`${C.green('✔')} Creado ${file}`);
   console.log(`  Páginas detectadas: ${result.pages.full.join(', ') || '— (ninguna; define "entries")'}`);
   if (result.broken.length) console.log(C.yellow(`  Hay ${result.broken.length} referencia(s) rota(s) en el código; míralas con "builder analyze".`));
+  if (result.dependencies.length)
+    console.log(`  Librerías de terceros detectadas (no se ofuscarán): ${result.dependencies.map((d) => d.rel).join(', ')}`);
   console.log(C.gray('  Edita "include" para forzar archivos que solo se cargan desde JS, e "ignore" para excluir.'));
+  console.log(C.gray('  En "dependencies.include" marcas a mano librerías; en "dependencies.exclude" corriges una detección.'));
 }
 
 async function cmdServe(dir, args) {
@@ -230,7 +296,9 @@ async function cmdDev(dir, args) {
     try {
       const fresh = await loadConfig({ dir, config: args.config, overrides: overridesFrom(args) });
       const result = await runPipeline(fresh, { mode: 'build', force: !!args.force });
-      console.log(`${C.green('✔')} ${reason ? `${reason} → ` : ''}compilado en ${Date.now() - t} ms${result.warnings.length ? C.yellow(` (${result.warnings.length} avisos)`) : ''}`);
+      console.log(
+        `${C.green('✔')} ${reason ? `${reason} → ` : ''}compilado en ${Date.now() - t} ms${result.warnings.length ? C.yellow(` (${result.warnings.length} avisos)`) : ''}`,
+      );
       for (const w of result.warnings.slice(0, 5)) console.log(C.yellow(`  • ${w}`));
       srv?.buildOk();
       srv?.reload();
@@ -254,11 +322,12 @@ async function cmdDev(dir, args) {
   let timer = null;
   const changed = new Set();
   const outDir = path.resolve(cfg.outDir);
-  fs.watch(cfg.root, { recursive: true }, (_event, name) => {
-    if (!name) return;
-    const abs = path.join(cfg.root, name);
-    if (abs === outDir || isInside(outDir, abs) || /(^|[\\/])(node_modules|\.git)([\\/]|$)|\.builder-(tmp|old)-/.test(name)) return;
-    changed.add(name.split(path.sep).join('/'));
+  const ignore = (rel) => {
+    const abs = path.join(cfg.root, rel);
+    return abs === outDir || isInside(outDir, abs) || /(^|\/)(node_modules|\.git)(\/|$)|\.builder-(tmp|old)-/.test(rel);
+  };
+  watchTree(cfg.root, ignore, (rel) => {
+    changed.add(rel);
     clearTimeout(timer);
     timer = setTimeout(() => {
       const list = [...changed];

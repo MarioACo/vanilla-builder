@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { build } from '../src/index.js';
 import { startServer } from '../src/server.js';
 
@@ -12,8 +13,16 @@ export const FIXTURES = path.join(HERE, 'fixtures');
 /** Copia un fixture a una carpeta temporal para no ensuciar el repositorio. */
 export function copyFixture(name) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `vb-${name}-`));
-  fs.cpSync(path.join(FIXTURES, name), dir, { recursive: true });
+  copyDirSync(path.join(FIXTURES, name), dir);
   return dir;
+}
+
+function copyDirSync(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    if (e.isDirectory()) copyDirSync(path.join(src, e.name), path.join(dest, e.name));
+    else fs.copyFileSync(path.join(src, e.name), path.join(dest, e.name));
+  }
 }
 
 export function tempDir(prefix = 'vb-') {
@@ -33,6 +42,23 @@ export const exists = (dir, rel) => fs.existsSync(path.join(dir, rel));
 
 export async function buildDir(dir, overrides = {}, opts = {}) {
   return build({ dir, overrides, ...opts });
+}
+
+/**
+ * Compila con la CLI usando otro ejecutable de Node (BUILDER_NODE=ruta/a/node).
+ * Sirve para compilar con Node 16 y comprobar el resultado en el navegador con un Node moderno.
+ */
+export function buildWithCli(dir, overrides = {}) {
+  const node = process.env.BUILDER_NODE;
+  if (!node) return buildDir(dir, overrides);
+  fs.writeFileSync(path.join(dir, 'builder.config.json'), JSON.stringify(overrides));
+  const r = spawnSync(node, [path.join(HERE, '..', 'bin', 'builder.js'), 'build', dir, '--json'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const out = JSON.parse(r.stdout || '{}');
+  if (r.status !== 0 || !out.ok) throw new Error(`La CLI con ${node} falló: ${out.error ?? r.stderr}\n${(out.details ?? []).join('\n')}`);
+  return out;
 }
 
 /** Busca un Chromium para las pruebas de navegador. */
@@ -97,7 +123,11 @@ export async function runInBrowser(dir, pages, { timeout = 15000 } = {}) {
         await page.waitForFunction(() => window.__done === true, null, { timeout });
         results = await page.evaluate(() => window.__results);
         // Cada carpeta se sirve en un puerto distinto: se normalizan las URLs absolutas.
-        results = JSON.parse(JSON.stringify(results ?? null).split(srv.url).join('/'));
+        results = JSON.parse(
+          JSON.stringify(results ?? null)
+            .split(srv.url)
+            .join('/'),
+        );
       } catch (err) {
         errors.push(`no terminó: ${err.message.split('\n')[0]}`);
       }
