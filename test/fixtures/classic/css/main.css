@@ -1,0 +1,11 @@
+@import "parts/titles.css";
+
+body {
+  background-color: rgb(1, 2, 3);
+  margin: 0px 0px 0px 0px;
+}
+
+.hero {
+  /* image-set con texto: esbuild no lo reescribe solo */
+  background-image: image-set("../img/dot.svg" 1x, "../img/dot.svg" 2x);
+}

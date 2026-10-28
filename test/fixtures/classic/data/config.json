@@ -1,0 +1,6 @@
+{
+  "nombre": "demo",
+  "grande": 12345678901234567890,
+  "decimal": 2.0,
+  "texto": "con  dos espacios y \"comillas\""
+}

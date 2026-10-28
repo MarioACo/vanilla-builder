@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Sitio clásico</title>
+  <!-- comentario que se puede quitar -->
+  <link rel="icon" href="img/favicon.svg">
+  <link rel="stylesheet" href="css/main.css">
+  <style>
+    /* estilo inline */
+    .inline-box { background-image: url("img/dot.svg"); padding: 4px  8px; }
+  </style>
+  <script src="js/vendor/mini-lib.js"></script>
+  <script src="js/util.js"></script>
+  <script src="js/strict-a.js"></script>
+</head>
+<body>
+  <h1 id="titulo">Hola   mundo</h1>
+  <p class="inline-box hero" style="color: rgb(255, 0, 0);  margin: 0px">Texto con <b>negrita</b> y&nbsp;espacio duro.</p>
+  <pre id="pre">  línea 1
+    línea 2</pre>
+  <button id="btn" onclick="saludar('Mario')">Saludar</button>
+  <img id="foto" src="img/foto.svg" srcset="img/foto.svg 1x, img/foto@2x.svg 2x" alt="">
+  <template id="tpl"><img src="img/dot.svg" alt="t"></template>
+  <script src="js/current.js" data-config="42"></script>
+  <script>
+    // script inline que usa globales de otros archivos
+    var desdeInline = sumar(2, 3);
+    window.__inlineOk = typeof MiniLib === 'object' && desdeInline === 5;
+    var cierre = "<\/script>";
+  </script>
+  <script src="js/app.js" defer></script>
+  <script src="js/app2.js" defer></script>
+  <a href="about.html">Acerca</a>
+  <script type="application/ld+json">
+  { "@context": "https://schema.org", "name": "Prueba" }
+  </script>
+</body>
+</html>
