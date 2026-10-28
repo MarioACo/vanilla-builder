@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Módulos</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "utils/": "./js/utils/",
+        "remoto": "https://cdn.example.invalid/remoto.js"
+      }
+    }
+  </script>
+  <link rel="modulepreload" href="js/main.js">
+  <link rel="modulepreload" href="js/lib/store.js">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="out">módulos</div>
+  <script type="module" src="js/main.js"></script>
+  <script type="module">
+    import { store } from './js/lib/store.js';
+    store.inline = true;
+    window.__inlineModule = store.count;
+  </script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+function widgetPie() {
+  return 'pie';
+}

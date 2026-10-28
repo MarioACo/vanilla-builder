@@ -1,0 +1,24 @@
+{
+  "name": "vanilla-builder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "acorn": "8.19.0",
+    "acorn-walk": "8.3.5",
+    "esbuild": "0.28.2",
+    "html-minifier-terser": "7.2.0",
+    "javascript-obfuscator": "5.9.0",
+    "parse5": "8.0.1",
+    "picomatch": "4.0.7"
+  },
+  "devDependencies": {
+    "playwright-core": "1.63.0"
+  },
+  "overrides": {
+    "zod": "4.6.7"
+  }
+}
