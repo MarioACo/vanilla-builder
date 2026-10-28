@@ -32,13 +32,16 @@ export const DEFAULTS = {
     legalComments: 'eof',
     define: {},
     chunkDir: 'assets',
+    minifier: 'esbuild',
   },
   json: { minify: true },
   obfuscate: false,
-  obfuscateExclude: ['**/*.min.js', '**/vendor/**', '**/node_modules/**'],
+  // Librerías de terceros: se detectan solas y no se ofuscan salvo que se pida.
+  dependencies: { detect: true, obfuscate: false, include: [], exclude: [] },
+  compress: false,
 };
 
-const NESTED = ['html', 'css', 'js', 'json'];
+const NESTED = ['html', 'css', 'js', 'json', 'dependencies'];
 const ENUMS = {
   unreferenced: ['process', 'copy', 'skip'],
   sri: ['auto', true, false],
@@ -46,15 +49,16 @@ const ENUMS = {
   'js.mergeClassic': ['auto', true, false],
   'js.legalComments': ['none', 'inline', 'eof'],
   'html.collapseWhitespace': ['auto', true, false],
+  'js.minifier': ['esbuild', 'terser'],
+  compress: [false, true, 'gzip', 'brotli'],
 };
-const OBF_PRESETS = ['low', 'medium', 'high'];
+const OBF_PRESETS = ['low', 'medium', 'high', 'max'];
 
 function levenshtein(a, b) {
   const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
   for (let j = 1; j <= b.length; j++) d[0][j] = j;
   for (let i = 1; i <= a.length; i++)
-    for (let j = 1; j <= b.length; j++)
-      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
   return d[a.length][b.length];
 }
 
@@ -79,17 +83,22 @@ export function normalizeConfig(raw, errors = []) {
   const cfg = { ...DEFAULTS, ...user };
   for (const k of NESTED) {
     const v = user[k];
-    if (v === false) cfg[k] = { ...DEFAULTS[k], minify: false };
+    if (v === false) cfg[k] = k === 'dependencies' ? { ...DEFAULTS[k], detect: false } : { ...DEFAULTS[k], minify: false };
     else if (v === true || v == null) cfg[k] = { ...DEFAULTS[k] };
     else if (typeof v === 'object') {
       checkKeys(v, DEFAULTS[k], `${k}.`, errors);
       cfg[k] = { ...DEFAULTS[k], ...v };
     } else errors.push(`"${k}" debe ser un objeto o true/false.`);
   }
-  for (const k of ['include', 'ignore', 'obfuscateExclude']) {
+  for (const k of ['include', 'ignore']) {
     cfg[k] = asList(cfg[k]);
     if (cfg[k].some((x) => typeof x !== 'string')) errors.push(`"${k}" debe ser una lista de rutas o patrones (texto).`);
   }
+  for (const k of ['include', 'exclude']) {
+    cfg.dependencies[k] = asList(cfg.dependencies[k]);
+    if (cfg.dependencies[k].some((x) => typeof x !== 'string')) errors.push(`"dependencies.${k}" debe ser una lista de rutas o patrones (texto).`);
+  }
+  for (const k of ['detect', 'obfuscate']) if (typeof cfg.dependencies[k] !== 'boolean') errors.push(`"dependencies.${k}" debe ser true o false.`);
   if (cfg.entries !== 'auto') {
     cfg.entries = asList(cfg.entries);
     if (!cfg.entries.length || cfg.entries.some((x) => typeof x !== 'string'))
@@ -106,7 +115,8 @@ export function normalizeConfig(raw, errors = []) {
   if (typeof cfg.hash !== 'boolean') errors.push('"hash" debe ser true o false.');
   cfg.js.drop = asList(cfg.js.drop);
   if (cfg.js.drop.some((d) => !['console', 'debugger'].includes(d))) errors.push('"js.drop" solo admite "console" y "debugger".');
-  if (typeof cfg.js.chunkDir !== 'string' || /(^|\/)\.\.(\/|$)|^\//.test(cfg.js.chunkDir)) errors.push('"js.chunkDir" debe ser una carpeta relativa.');
+  if (typeof cfg.js.chunkDir !== 'string' || /(^|\/)\.\.(\/|$)|^\//.test(cfg.js.chunkDir))
+    errors.push('"js.chunkDir" debe ser una carpeta relativa.');
   for (const k of ['css', 'js']) {
     const t = cfg[k].target;
     if (!(typeof t === 'string' || (Array.isArray(t) && t.every((x) => typeof x === 'string'))))
@@ -146,8 +156,7 @@ export function findConfigFile(dir) {
  */
 export async function loadConfig({ dir = '.', config, overrides = {}, cwd = process.cwd() } = {}) {
   const projectDir = path.resolve(cwd, dir);
-  if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory())
-    throw new BuildError(`La carpeta del proyecto no existe: ${projectDir}`);
+  if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory()) throw new BuildError(`La carpeta del proyecto no existe: ${projectDir}`);
   const configFile = config ? path.resolve(cwd, config) : findConfigFile(projectDir);
   if (config && !fs.existsSync(configFile)) throw new BuildError(`No existe el archivo de configuración: ${configFile}`);
   const fileCfg = configFile ? await readConfigFile(configFile) : {};
@@ -170,7 +179,7 @@ function mergeOverrides(base, over) {
     if (NESTED.includes(k) && v && typeof v === 'object' && !Array.isArray(v)) {
       const prev = base[k];
       out[k] = { ...(prev && typeof prev === 'object' ? prev : prev === false ? { minify: false } : {}), ...v };
-    } else if (['include', 'ignore', 'obfuscateExclude'].includes(k)) {
+    } else if (['include', 'ignore'].includes(k)) {
       out[k] = [...asList(base[k]), ...asList(v)];
     } else out[k] = v;
   }

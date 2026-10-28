@@ -46,7 +46,8 @@ export function resolveRef(raw, baseDir, ctx, opts = {}) {
   } else {
     rel = path.posix.join(baseDir || '.', info.path);
   }
-  rel = path.posix.normalize(rel).replace(/^\.\/?/, '');
+  rel = path.posix.normalize(rel);
+  if (rel === '.' || rel === './') rel = '';
   if (rel === '..' || rel.startsWith('../')) return { status: 'outside', info };
   const isDirLike = rel === '' || rel.endsWith('/') || info.path.endsWith('/');
   const candidates = [];

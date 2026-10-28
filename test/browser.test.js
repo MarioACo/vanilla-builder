@@ -3,26 +3,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { copyFixture, buildDir, runInBrowser, findBrowser } from './helpers.js';
+import { copyFixture, buildWithCli, runInBrowser, findBrowser } from './helpers.js';
 
 const skip = findBrowser() ? false : 'no hay Chromium disponible (define BUILDER_CHROMIUM)';
 
 const SCENARIOS = [
   { fixture: 'classic', pages: ['index.html', 'about.html'] },
   { fixture: 'modules', pages: ['index.html', 'admin/index.html'] },
+  { fixture: 'npm', pages: ['index.html'] },
 ];
 const VARIANTS = [
   { name: 'por defecto', overrides: {} },
   { name: 'ofuscación alta + hash', overrides: { obfuscate: 'high', hash: true } },
+  { name: 'ofuscación max', overrides: { obfuscate: 'max' } },
+  { name: 'compresión máxima (terser) + .gz/.br', overrides: { js: { minifier: 'terser' }, compress: true } },
   { name: 'sin minificar', overrides: { js: { minify: false }, css: { minify: false }, html: { minify: false } } },
 ];
 
 for (const { fixture, pages } of SCENARIOS) {
   for (const v of VARIANTS) {
-    test(`${fixture} (${v.name}): se comporta igual que el original`, { skip, timeout: 180000 }, async () => {
+    const via = process.env.BUILDER_NODE ? ` [compilado con ${process.env.BUILDER_NODE_LABEL ?? 'otro Node'}]` : '';
+    test(`${fixture} (${v.name})${via}: se comporta igual que el original`, { skip, timeout: 180000 }, async () => {
       const dir = copyFixture(fixture);
       const src = await runInBrowser(dir, pages);
-      await buildDir(dir, v.overrides);
+      await buildWithCli(dir, v.overrides);
       const dist = await runInBrowser(path.join(dir, 'dist'), pages);
       for (const p of pages) {
         assert.deepEqual(src[p].errors, [], `el original de ${p} ya tiene errores`);

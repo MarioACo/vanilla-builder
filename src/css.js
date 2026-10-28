@@ -56,8 +56,8 @@ function cssPlugin(ctx, { outRel, consumed, label }) {
         const spec = args.path;
         if (EXTERNAL.test(spec) || /\{\{|\$\{/.test(spec)) return { path: spec, external: true };
         const isStdin = !args.importer || args.importer === '<stdin>';
-        const fromRel = isStdin ? label : relFrom(ctx.root, args.importer) ?? label;
-        const baseDir = args.resolveDir ? relFrom(ctx.root, args.resolveDir) ?? '' : path.posix.dirname(fromRel);
+        const fromRel = isStdin ? label : (relFrom(ctx.root, args.importer) ?? label);
+        const baseDir = args.resolveDir ? (relFrom(ctx.root, args.resolveDir) ?? '') : path.posix.dirname(fromRel);
         const r = ctx.resolve(spec, baseDir);
         if (r.status !== 'ok') {
           ctx.reportBroken(fromRel, spec, r);
@@ -69,7 +69,10 @@ function cssPlugin(ctx, { outRel, consumed, label }) {
         const target = ctx.assetOut(r.rel);
         let url = path.posix.relative(path.posix.dirname(outRel), target);
         if (!url) url = path.posix.basename(target);
-        url = url.split('/').map((s) => (s === '..' ? s : encodeURIComponent(s))).join('/');
+        url = url
+          .split('/')
+          .map((s) => (s === '..' ? s : encodeURIComponent(s)))
+          .join('/');
         return { path: url + r.info.suffix, external: true };
       });
       b.onLoad({ filter: /\.css$/i }, (args) => {
@@ -102,14 +105,27 @@ export async function buildCss(ctx, job) {
     plugins: [cssPlugin(ctx, { outRel: job.outRel, consumed, label: job.entry ?? job.inline?.label })],
     legalComments: cfg.css.minify ? cfg.js.legalComments : 'inline',
     charset: 'ascii',
-    sourcemap: job.inline ? false : cfg.sourcemap === 'hidden' ? 'external' : cfg.sourcemap === 'inline' ? 'inline' : cfg.sourcemap ? 'linked' : false,
+    sourcemap: job.inline
+      ? false
+      : cfg.sourcemap === 'hidden'
+        ? 'external'
+        : cfg.sourcemap === 'inline'
+          ? 'inline'
+          : cfg.sourcemap
+            ? 'linked'
+            : false,
   };
   let result;
   try {
     result = job.inline
       ? await esbuild.build({
           ...common,
-          stdin: { contents: imageSetStringsToUrl(job.inline.code), resolveDir: ctx.abs(job.inline.baseDir), loader: 'css', sourcefile: job.inline.label },
+          stdin: {
+            contents: imageSetStringsToUrl(job.inline.code),
+            resolveDir: ctx.abs(job.inline.baseDir),
+            loader: 'css',
+            sourcefile: job.inline.label,
+          },
         })
       : await esbuild.build({ ...common, entryPoints: [ctx.abs(job.entry)] });
   } catch (err) {

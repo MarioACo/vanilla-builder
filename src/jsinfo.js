@@ -38,6 +38,14 @@ const isImportMetaUrl = (n) =>
 const propName = (n) => (n.type === 'MemberExpression' && !n.computed ? n.property.name : n.type === 'Identifier' ? n.name : null);
 const PATHLIKE = /^[^\s<>"'`]{1,260}\.[a-z0-9]{1,10}(?:[?#][^\s]*)?$/i;
 
+/** Texto fijo con el que empieza una expresión de ruta ('./a/' + x → './a/'). */
+function fixedPrefix(n) {
+  if (isStr(n)) return strVal(n);
+  if (n.type === 'TemplateLiteral') return n.quasis[0].value.cooked ?? '';
+  if (n.type === 'BinaryExpression' && n.operator === '+') return fixedPrefix(n.left);
+  return '';
+}
+
 function patternNames(node, out) {
   if (!node) return;
   switch (node.type) {
@@ -123,6 +131,7 @@ export function analyzeJs(code, opts = {}) {
     workers: [],
     urls: [],
     unsafeUrls: [],
+    unsafeImports: [],
     dynamicImports: 0,
     strings: new Set(),
     usesCurrentScript: false,
@@ -142,7 +151,9 @@ export function analyzeJs(code, opts = {}) {
     }
     const module =
       optsNode?.type === 'ObjectExpression' &&
-      optsNode.properties.some((p) => p.type === 'Property' && (p.key.name === 'type' || p.key.value === 'type') && isStr(p.value) && strVal(p.value) === 'module');
+      optsNode.properties.some(
+        (p) => p.type === 'Property' && (p.key.name === 'type' || p.key.value === 'type') && isStr(p.value) && strVal(p.value) === 'module',
+      );
     info.workers.push({ spec, kind, module: !!module, viaUrl });
   };
   // Textos que ya son rutas de import/worker/new URL: no cuentan como "mencionados".
@@ -166,7 +177,11 @@ export function analyzeJs(code, opts = {}) {
         info.dynamicImports++;
         handled.add(node.source);
         if (isStr(node.source)) info.imports.push({ spec: strVal(node.source), kind: 'dynamic' });
-        else info.imports.push({ spec: null, kind: 'dynamic' });
+        else {
+          info.imports.push({ spec: null, kind: 'dynamic' });
+          // esbuild sabe seguir `./pag/${x}.js` o './pag/' + x (prefijo fijo); una ruta calculada sin prefijo, no.
+          if (!/^\.\.?\//.test(fixedPrefix(node.source))) info.unsafeImports.push(code.slice(node.start, Math.min(node.end, node.start + 80)));
+        }
         break;
       case 'MetaProperty':
         if (node.meta.name === 'import') info.hasImportMeta = true;
@@ -179,7 +194,8 @@ export function analyzeJs(code, opts = {}) {
         break;
       case 'NewExpression': {
         const name = propName(node.callee);
-        if (name === 'Worker' || name === 'SharedWorker') addWorker(node.arguments[0], name === 'Worker' ? 'worker' : 'sharedworker', node.arguments[1]);
+        if (name === 'Worker' || name === 'SharedWorker')
+          addWorker(node.arguments[0], name === 'Worker' ? 'worker' : 'sharedworker', node.arguments[1]);
         else if (name === 'URL' && isImportMetaUrl(node.arguments[1])) {
           const a = node.arguments[0];
           handled.add(a);
@@ -195,7 +211,12 @@ export function analyzeJs(code, opts = {}) {
             handled.add(a);
             if (isStr(a)) info.workers.push({ spec: strVal(a), kind: 'importScripts', module: false, viaUrl: false });
           }
-        } else if (callee.type === 'MemberExpression' && propName(callee) === 'register' && callee.object.type === 'MemberExpression' && propName(callee.object) === 'serviceWorker') {
+        } else if (
+          callee.type === 'MemberExpression' &&
+          propName(callee) === 'register' &&
+          callee.object.type === 'MemberExpression' &&
+          propName(callee.object) === 'serviceWorker'
+        ) {
           addWorker(node.arguments[0], 'serviceworker', node.arguments[1]);
         }
         break;

@@ -4,10 +4,11 @@ import fs from 'node:fs';
 import * as esbuild from 'esbuild';
 import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
-import { analyzeJs, compareGlobals } from './jsinfo.js';
+import { analyzeJs, compareGlobals, moduleShape } from './jsinfo.js';
 import { obfuscateSafe } from './obfuscate.js';
+import { importOptional } from './optional.js';
 import { replaceWithMap } from './sourcemap.js';
-import { relFrom, toPosix, BuildError, rootPrefix } from './util.js';
+import { relFrom, toPosix, BuildError, rootPrefix, hasOwn, shortHash } from './util.js';
 import { classifyUrl } from './urls.js';
 import { formatMessage, esbuildErrorText } from './css.js';
 
@@ -97,6 +98,12 @@ export async function processClassic(ctx, { code, id, info, obfuscate, sourcemap
       out = o.code;
       map = null;
     } else notes.push(`no se ofuscó: ${o.reason}`);
+  } else if (out !== code) {
+    const t = await terserPass(ctx, out, { isModule: false, level: info.level, globals: info.top });
+    if (t !== out) {
+      out = t;
+      map = null;
+    }
   }
   return { code: out, map, notes };
 }
@@ -136,6 +143,12 @@ export async function processModuleStandalone(ctx, { code, id, info, obfuscate, 
       out = o.code;
       map = null;
     } else notes.push(`no se ofuscó: ${o.reason}`);
+  } else if (out !== code) {
+    const t = await terserPass(ctx, out, { isModule: true, level: info.level });
+    if (t !== out) {
+      out = t;
+      map = null;
+    }
   }
   return { code: out, map, notes };
 }
@@ -153,7 +166,7 @@ export function mapSpecifier(ctx, importMap, spec, importerDir) {
   const isUrlLike = spec.startsWith('/') || spec.startsWith('./') || spec.startsWith('../');
   let target = null;
   if (!isUrlLike) {
-    if (Object.hasOwn(imports, spec)) target = imports[spec];
+    if (hasOwn(imports, spec)) target = imports[spec];
     else {
       const key = Object.keys(imports)
         .filter((k) => k.endsWith('/') && spec.startsWith(k))
@@ -172,12 +185,24 @@ export function mapSpecifier(ctx, importMap, spec, importerDir) {
   const c = classifyUrl(target);
   if (c.type === 'external') return { external: true };
   const r = ctx.resolve(target, importMap.baseDir);
-  return r.status === 'ok' ? { rel: r.rel } : { broken: r, target };
+  if (r.status === 'ok') return { rel: r.rel };
+  // Paquetes de npm servidos desde node_modules: no se publican, pero existen en disco y se empaquetan.
+  if ((r.status === 'missing' || r.status === 'ignored') && r.rel && /(^|\/)node_modules\//.test(r.rel)) {
+    const abs = ctx.abs(r.rel);
+    if (fs.existsSync(abs) && fs.statSync(abs).isFile()) return { abs };
+  }
+  return { broken: r, target };
 }
 
 const EXTERNAL_SPEC = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
 
 function modulePlugin(ctx, group, state) {
+  const isDepPath = (abs) => {
+    if (!abs) return false;
+    const rel = relFrom(ctx.root, abs);
+    if (rel == null || /(^|\/)node_modules\//.test(toPosix(abs))) return true;
+    return !!ctx.dependencyReason(rel);
+  };
   const prepare = (code, id, baseDir, local) => {
     let info = state.analysis.get(id);
     if (!info) {
@@ -187,7 +212,8 @@ function modulePlugin(ctx, group, state) {
     if (!info.ok) return code;
     state.levels.push(info.level ?? 9999);
     if (!local) return code;
-    for (const u of info.unsafeUrls) state.unsafe.push(`${id}: ${u}`);
+    for (const u of info.unsafeUrls) state.unsafe.push(`new URL(variable, import.meta.url) en ${id}: ${u}`);
+    for (const u of info.unsafeImports) state.unsafe.push(`import() con una ruta calculada en ${id}: ${u}`);
     if (state.mode === 'scan') ctx.noteJsInfo(id, info, baseDir, { module: true });
     if (!info.urls.length) return code;
     let out = '';
@@ -212,8 +238,32 @@ function modulePlugin(ctx, group, state) {
         const v = group.virtual.get(a.path);
         return { contents: prepare(v.code, v.label, v.baseDir, true), resolveDir: ctx.abs(v.baseDir), loader: 'js' };
       });
-      b.onResolve({ filter: /.*/ }, (a) => {
+      b.onResolve({ filter: /.*/ }, async (a) => {
         if (a.kind === 'entry-point') return undefined;
+        const r = resolveSpecial(a);
+        // Separación de dependencias: lo que el código propio importa de una librería va a su propio archivo vendor.
+        if (!state.vendor || a.pluginData?.vbInner || r?.external || r?.errors) return r;
+        if (a.namespace !== 'vb-inline' && isDepPath(a.importer)) return r;
+        let abs = r?.path;
+        if (!abs) {
+          const res = await b.resolve(a.path, {
+            kind: a.kind,
+            resolveDir: a.resolveDir,
+            importer: a.namespace === 'vb-inline' ? undefined : a.importer,
+            pluginData: { vbInner: true },
+          });
+          if (res.errors.length || res.external) return undefined;
+          abs = res.path;
+        }
+        if (!isDepPath(abs)) return r;
+        if (state.mode === 'scan') {
+          if (!state.vendor.has(abs)) state.vendor.set(abs, a.path);
+          return r;
+        }
+        const out = state.vendorOut?.get(abs);
+        return out ? { path: `${MARK}/${out}`, external: true } : r;
+      });
+      const resolveSpecial = (a) => {
         const spec = a.path;
         if (EXTERNAL_SPEC.test(spec)) return { path: spec, external: true };
         const importer = a.namespace === 'vb-inline' ? group.virtual.get(a.importer)?.label : relFrom(ctx.root, a.importer);
@@ -231,6 +281,7 @@ function modulePlugin(ctx, group, state) {
         const mapped = mapSpecifier(ctx, group.importMap, spec, baseDir);
         if (mapped?.external) return { path: spec, external: true };
         if (mapped?.rel) return { path: ctx.abs(mapped.rel) };
+        if (mapped?.abs) return { path: mapped.abs };
         if (mapped?.broken) return { errors: [{ text: `El import map de la página apunta "${spec}" a "${mapped.target}", que no existe.` }] };
         if (spec.startsWith('/')) {
           const r = ctx.resolve(spec, baseDir);
@@ -238,7 +289,7 @@ function modulePlugin(ctx, group, state) {
           return { errors: [{ text: `No existe "${spec}" (importado desde ${importer}).` }] };
         }
         return undefined;
-      });
+      };
       b.onLoad({ filter: /\.(?:m?js|cjs)$/i }, (a) => {
         const rel = relFrom(ctx.root, a.path);
         const local = rel != null && !/(^|\/)node_modules\//.test(rel) && ctx.files.has(rel);
@@ -250,8 +301,111 @@ function modulePlugin(ctx, group, state) {
   };
 }
 
-function newState(mode) {
-  return { mode, analysis: new Map(), levels: [], unsafe: [], consumed: new Set() };
+function newState(mode, vendor = false) {
+  return { mode, analysis: new Map(), levels: [], unsafe: [], consumed: new Set(), vendor: vendor ? new Map() : null, vendorOut: null };
+}
+
+let terser = null;
+
+/** Carga terser (opcional) para la compresión máxima. */
+export async function ensureTerser(projectRoot) {
+  terser = await importOptional('terser', projectRoot, 'para la compresión máxima (js.minifier: "terser")');
+}
+
+/**
+ * Segunda pasada con terser (varias pasadas de compresión). Solo se acepta si el resultado
+ * es más pequeño y conserva globales (scripts) o exportaciones/importaciones (módulos).
+ */
+export async function terserPass(ctx, code, { isModule, level, globals }) {
+  const js = ctx.cfg.js;
+  if (!terser || js.minifier !== 'terser' || !js.minify || ctx.cfg.sourcemap) return code;
+  const ecma = Math.min(2020, Math.max(5, level ?? 2020));
+  let out;
+  try {
+    const r = await terser.minify(code, {
+      module: isModule,
+      toplevel: isModule,
+      ecma,
+      compress: { passes: 3, ecma, module: isModule, toplevel: isModule },
+      mangle: { toplevel: isModule },
+      keep_fnames: js.keepNames,
+      keep_classnames: js.keepNames,
+      format: { comments: /^!|@license|@preserve/i, ascii_only: true, ecma },
+    });
+    out = r.code;
+  } catch {
+    return code;
+  }
+  if (!out || out.length >= code.trimEnd().length) return code;
+  if (isModule) {
+    const a = moduleShape(code);
+    const b = moduleShape(out);
+    if (!a || !b || a.exports !== b.exports || a.imports !== b.imports) return code;
+  } else if (!globals || !compareGlobals(globals, out).ok) return code;
+  return out;
+}
+
+/** Bytes de origen que aportaron código a una salida (incluye paquetes de node_modules). */
+function inputBytes(metafile, meta) {
+  return Object.keys(meta.inputs ?? {}).reduce((sum, k) => sum + (metafile.inputs[k]?.bytes ?? 0), 0);
+}
+
+export function levelOf(target) {
+  const m = /^es(\d{4})$/.exec(target);
+  return m ? Number(m[1]) : target === 'es5' ? 5 : 2020;
+}
+
+/** Empaqueta las librerías importadas por el código propio en archivos vendor (sin ofuscar). */
+async function buildVendor(ctx, group, common, vendor, target) {
+  const chunkDir = ctx.cfg.js.chunkDir.replace(/\/+$/, '');
+  const names = new Set();
+  const entryPoints = [];
+  for (const [abs, spec] of vendor) {
+    const bare = !/^[./]/.test(spec) && !EXTERNAL_SPEC.test(spec);
+    const base = (bare ? spec : path.basename(abs))
+      .replace(/\.[cm]?js$/i, '')
+      .replace(/^@/, '')
+      .replace(/[^\w.-]+/g, '_');
+    const name = names.has(base) ? `${base}-${shortHash(abs, 6)}` : base;
+    names.add(name);
+    entryPoints.push({ in: abs, out: `${chunkDir}/vendor/${name}` });
+  }
+  const st = newState('emit');
+  const res = await esbuild.build({
+    ...common,
+    entryPoints,
+    entryNames: group.hash ? '[dir]/[name]-[hash]' : '[dir]/[name]',
+    chunkNames: `${chunkDir}/vendor/[name]-[hash]`,
+    target,
+    minify: ctx.cfg.js.minify,
+    keepNames: ctx.cfg.js.keepNames,
+    drop: ctx.cfg.js.drop,
+    sourcemap: esbuildSourcemap(ctx.cfg),
+    plugins: [modulePlugin(ctx, { importMap: group.importMap, virtual: new Map() }, st)],
+  });
+  const outdir = common.outdir;
+  const outByAbs = new Map();
+  const maps = new Map();
+  const outputs = [];
+  for (const f of res.outputFiles) {
+    const outRel = toPosix(path.relative(outdir, f.path));
+    if (outRel.endsWith('.map')) maps.set(outRel.slice(0, -4), f.text);
+  }
+  for (const f of res.outputFiles) {
+    const outRel = toPosix(path.relative(outdir, f.path));
+    if (outRel.endsWith('.map')) continue;
+    const meta = res.metafile.outputs[toPosix(path.relative(ctx.root, f.path))] ?? {};
+    if (meta.entryPoint) outByAbs.set(path.resolve(ctx.root, meta.entryPoint), outRel);
+    let code = f.text.replace(/\n\/\/# sourceMappingURL=.*\n?$/, '\n');
+    let map = maps.get(outRel) ?? null;
+    ({ code, map } = finalizeMarkers(code, map, outRel));
+    const srcInputs = Object.keys(meta.inputs ?? {})
+      .map((p) => relFrom(ctx.root, path.resolve(ctx.root, p)))
+      .filter((rel) => rel && ctx.files.has(rel));
+    const before = inputBytes(res.metafile, meta);
+    outputs.push({ outRel, code, map, entry: null, virtualId: null, inputs: srcInputs, isChunk: !meta.entryPoint, isVendor: true, before });
+  }
+  return { outByAbs, outputs, consumed: st.consumed };
 }
 
 /** Reescribe los import relativos de un módulo como si estuviera en `toFile` en lugar de `fromFile`. */
@@ -262,7 +416,9 @@ export function rebaseImports(code, fromFile, toFile) {
   const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
   const spans = [];
   walk.full(ast, (n) => {
-    const src = (n.type === 'ImportDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'ExportNamedDeclaration' || n.type === 'ImportExpression') && n.source;
+    const src =
+      (n.type === 'ImportDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'ExportNamedDeclaration' || n.type === 'ImportExpression') &&
+      n.source;
     if (src && src.type === 'Literal' && typeof src.value === 'string' && /^\.\.?\//.test(src.value)) spans.push(src);
   });
   let out = code;
@@ -298,7 +454,7 @@ export async function buildModuleGroup(ctx, group) {
     platform: 'browser',
     outdir,
     outbase: ctx.root,
-    entryNames: cfg.hash ? `${chunkDir}/[name]-[hash]` : '[dir]/[name]',
+    entryNames: group.hash ? `${chunkDir}/[name]-[hash]` : '[dir]/[name]',
     chunkNames: `${chunkDir}/[name]-[hash]`,
     assetNames: `${chunkDir}/[name]-[hash]`,
     write: false,
@@ -309,7 +465,7 @@ export async function buildModuleGroup(ctx, group) {
     legalComments: cfg.js.legalComments,
     define: cfg.js.define,
   };
-  const scanState = newState('scan');
+  const scanState = newState('scan', group.vendorSplit);
   let scan;
   try {
     scan = await esbuild.build({ ...common, target: 'esnext', plugins: [modulePlugin(ctx, group, scanState)] });
@@ -324,13 +480,24 @@ export async function buildModuleGroup(ctx, group) {
   if (!cfg.js.bundle) reason = 'js.bundle está desactivado';
   else if (group.forcePerFile) reason = group.forcePerFile;
   else if (dynamicWarnings.length) reason = `hay import() con rutas que no se pueden seguir (${formatMessage(dynamicWarnings[0], ctx.root)})`;
-  else if (scanState.unsafe.length) reason = `new URL(variable, import.meta.url) en ${scanState.unsafe[0]}`;
+  else if (scanState.unsafe.length) reason = scanState.unsafe[0];
   if (reason) return { mode: 'per-file', reason, inputs, consumed: new Set() };
   for (const w of scan.warnings) ctx.warn(`JS: ${formatMessage(w, ctx.root)}`);
 
   const target = cfg.js.target === 'auto' ? await targetForLevel(Math.max(2015, ...scanState.levels)) : cfg.js.target;
-  const emitState = newState('emit');
+  const emitState = newState('emit', group.vendorSplit);
   emitState.analysis = scanState.analysis;
+  let vendor = null;
+  if (scanState.vendor?.size) {
+    try {
+      vendor = await buildVendor(ctx, group, common, scanState.vendor, target);
+      emitState.vendorOut = vendor.outByAbs;
+    } catch (err) {
+      ctx.warn(
+        `no se pudieron separar las dependencias en archivos vendor (${esbuildErrorText(err, ctx.root).split('\n')[0]}); van dentro del paquete y se ofuscarán con él`,
+      );
+    }
+  }
   let res;
   try {
     res = await esbuild.build({
@@ -372,9 +539,13 @@ export async function buildModuleGroup(ctx, group) {
       code = rebaseImports(code, f.outRel, pageFile);
       map = null;
     } else ({ code, map } = finalizeMarkers(code, map, f.outRel));
-    outputs.push({ outRel: f.outRel, code, map, entry, virtualId, inputs: srcInputs, isChunk: !ep });
+    outputs.push({ outRel: f.outRel, code, map, entry, virtualId, inputs: srcInputs, isChunk: !ep, before: inputBytes(res.metafile, meta) });
   }
-  return { mode: 'bundle', outputs, consumed: emitState.consumed, inputs, target };
+  if (vendor) {
+    outputs.push(...vendor.outputs);
+    for (const rel of vendor.consumed) emitState.consumed.add(rel);
+  }
+  return { mode: 'bundle', outputs, consumed: emitState.consumed, inputs, target, vendor: vendor ? [...scanState.vendor.values()] : [] };
 }
 
 /** Worker o service worker de tipo módulo: se empaqueta solo, sin compartir chunks, en su ruta original. */

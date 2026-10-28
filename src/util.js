@@ -1,5 +1,6 @@
 // Utilidades compartidas: rutas, hashes, codificación y errores.
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 
 export class BuildError extends Error {
@@ -35,7 +36,8 @@ export function sri(data, algo = 'sha384') {
   return `${algo}-${crypto.createHash(algo).update(data).digest('base64')}`;
 }
 
-const strictDecoder = new TextDecoder('utf-8', { fatal: true });
+// ignoreBOM: true deja el BOM en el texto para poder detectarlo y conservarlo.
+const strictDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 /** Devuelve el texto si el buffer es UTF-8 válido; null si no (se copiará tal cual). */
 export function decodeUtf8(buf) {
@@ -72,7 +74,11 @@ export function rootPrefix(fromFileRel) {
   return depth === 0 ? '.' : Array(depth).fill('..').join('/');
 }
 
-export const encodePath = (p) => p.split('/').map((seg) => (seg === '.' || seg === '..' ? seg : encodeURIComponent(seg))).join('/');
+export const encodePath = (p) =>
+  p
+    .split('/')
+    .map((seg) => (seg === '.' || seg === '..' ? seg : encodeURIComponent(seg)))
+    .join('/');
 
 export function formatBytes(n) {
   if (n < 1024) return `${n} B`;
@@ -95,6 +101,31 @@ export async function retryFs(fn, attempts = 12) {
 }
 
 export const unique = (arr) => [...new Set(arr)];
+
+// Compatibilidad con Node 16 (Object.hasOwn llegó en 16.9; fs.cp en 16.7 como experimental).
+export const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+/** Copia recursiva de carpetas. */
+export async function copyDir(src, dest) {
+  await fs.promises.mkdir(dest, { recursive: true });
+  for (const entry of await fs.promises.readdir(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dest, entry.name);
+    if (entry.isDirectory()) await copyDir(from, to);
+    else await retryFs(() => fs.promises.copyFile(from, to));
+  }
+}
+
+/** Lista recursiva de archivos (rutas relativas POSIX). */
+export function listFiles(dir, base = dir) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const abs = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...listFiles(abs, base));
+    else out.push(toPosix(path.relative(base, abs)));
+  }
+  return out;
+}
 
 /** Quita espacios fuera de las cadenas de un JSON válido. No toca ningún valor (sin pérdida). */
 export function minifyJsonText(text) {

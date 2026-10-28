@@ -48,8 +48,7 @@ const normalizePattern = (p) => {
   const s = toPosix(p).replace(/^\.\//, '');
   return s.endsWith('/') ? `${s}**` : s;
 };
-const matcher = (patterns) =>
-  patterns.length ? picomatch(patterns.map(normalizePattern), { dot: true, nocase: true }) : () => false;
+const matcher = (patterns) => (patterns.length ? picomatch(patterns.map(normalizePattern), { dot: true, nocase: true }) : () => false);
 
 /**
  * Lista los archivos del proyecto con el motivo de exclusión de cada uno.
