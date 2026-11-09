@@ -1,0 +1,13 @@
+{
+  "name": "vanilla-builder-compare",
+  "private": true,
+  "description": "Compares vanilla-builder with Parcel and Vite on the same sites (correctness in Chromium, time and size).",
+  "type": "module",
+  "scripts": {
+    "compare": "node run.mjs"
+  },
+  "devDependencies": {
+    "parcel": "2.16.4",
+    "vite": "8.3.5"
+  }
+}

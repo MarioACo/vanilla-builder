@@ -3,3 +3,5 @@
 dist/
 *.log
 examples/*/dist/
+bench/compare/node_modules/
+bench/compare/.out/
