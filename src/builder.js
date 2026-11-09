@@ -23,6 +23,7 @@ import { detectDependency, dependencyPragma, packageNames } from './deps.js';
 import { assertSafeOutDir, writeStaging, swapIntoPlace, discardStaging, writeManifest, MANIFEST } from './output.js';
 import { verifyOutput } from './verify.js';
 import { rewriteTsImports } from './jsimports.js';
+import { IMAGE_EXT, ensureSharp, imageOptions, optimizeImage } from './images.js';
 import { buildReport } from './report.js';
 import {
   BuildError,
@@ -770,6 +771,8 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
   };
   if (ctx.obfuscatorOptions) await ensureObfuscator(cfg.root);
   if (cfg.js.minifier === 'terser' && cfg.js.minify) await ensureTerser(cfg.root);
+  const images = mode === 'build' ? imageOptions(cfg.images) : null;
+  const sharp = images ? await ensureSharp(cfg.root) : null;
 
   mark('pages');
   // 1. Páginas y entradas
@@ -1104,6 +1107,7 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
 
   mark('assets');
   // 10. Recursos: todo lo demás se copia (sin perder nada)
+  const imageJobs = [];
   for (const [rel, f] of ctx.files) {
     if (ctx.hasOwnOutput(rel)) {
       if (!ctx.coverage.has(rel)) ctx.cover(rel, L('procesado', 'processed'), rel);
@@ -1130,9 +1134,32 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
         continue;
       }
     }
+    if (sharp && IMAGE_EXT.has(f.ext)) {
+      imageJobs.push({ rel, f });
+      continue;
+    }
     ctx.emitCopy(rel, rel);
     ctx.cover(rel, L('copiado', 'copied'), rel);
   }
+  // Imágenes: en paralelo (sharp usa sus propios hilos) y con caché por contenido; se registran en orden.
+  const optimized = await mapLimit(imageJobs, 8, async ({ rel, f }) => {
+    const buf = fs.readFileSync(f.abs);
+    const r = await ctx.heavy.memo(`image:${f.ext}:q${images.quality}:sharp${sharp.versions?.sharp ?? '?'}`, buf, async () => {
+      const o = await optimizeImage(sharp, buf, f.ext, images);
+      return o.data ? { b64: o.data.toString('base64') } : { skip: o.skip };
+    });
+    return r.b64 ? { data: Buffer.from(r.b64, 'base64') } : r;
+  });
+  imageJobs.forEach(({ rel, f }, i) => {
+    const o = optimized[i];
+    if (o.data) {
+      ctx.emit(rel, o.data, { type: 'asset', action: 'image', sources: [rel], before: f.size });
+      ctx.cover(rel, L('imagen optimizada', 'image optimized'), rel);
+    } else {
+      ctx.emitCopy(rel, rel);
+      ctx.cover(rel, L(`copiado (${o.skip})`, `copied (${o.skip})`), rel);
+    }
+  });
 
   mark('warnings');
   // 11. Avisos de rutas mencionadas en el código que ya no existirán

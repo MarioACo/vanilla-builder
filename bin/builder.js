@@ -63,6 +63,8 @@ Opciones de build:
   --json                   Resultado en JSON (para CI)
   --verbose                Muestra notas, archivos copiados y excluidos
   --quiet                  Solo errores
+  --images                 Optimiza PNG (sin pérdida) y JPEG/WebP (calidad 80) con sharp
+  --image-quality <1-100>  Calidad de JPEG/WebP con --images (por defecto 80)
   --browsers <consulta>    Navegadores objetivo (browserslist), ej. "> 0.5%, not dead"; --no-browsers los ignora
   --lang <en|es>           Idioma de los mensajes (por defecto: el del sistema; o BUILDER_LANG)
 `,
@@ -111,6 +113,8 @@ Build options:
   --json                   JSON result (for CI)
   --verbose                Show notes, copied and excluded files
   --quiet                  Errors only
+  --images                 Optimize PNG (lossless) and JPEG/WebP (quality 80) with sharp
+  --image-quality <1-100>  JPEG/WebP quality with --images (default 80)
   --browsers <query>       Target browsers (browserslist), e.g. "> 0.5%, not dead"; --no-browsers ignores them
   --lang <en|es>           Message language (default: system language; or BUILDER_LANG)
 `,
@@ -136,6 +140,7 @@ function parseArgs(argv) {
     'dir',
     'lang',
     'browsers',
+    'image-quality',
   ]);
   const optionalValue = { obfuscate: ['low', 'medium', 'high', 'max'], sourcemap: ['linked', 'hidden', 'inline'], compress: ['gzip', 'brotli'] };
   for (let i = 0; i < argv.length; i++) {
@@ -173,6 +178,12 @@ function overridesFrom(args) {
   if (args.verify === false) o.verify = false;
   if (args.compress !== undefined) o.compress = args.compress;
   if (args.cache === false) o.cache = false;
+  if (args['image-quality'] !== undefined) {
+    const q = Number(args['image-quality']);
+    if (!(Number.isInteger(q) && q >= 1 && q <= 100))
+      throw new BuildError(L('--image-quality debe ser un número entre 1 y 100.', '--image-quality must be a number between 1 and 100.'));
+    o.images = { quality: q };
+  } else if (args.images !== undefined) o.images = !!args.images;
   if (args.browsers === false) o.browsers = false;
   else if (typeof args.browsers === 'string') o.browsers = args.browsers;
   if (args.workers !== undefined) {

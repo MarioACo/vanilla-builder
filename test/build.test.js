@@ -624,6 +624,60 @@ test('navegadores: .browserslistrc con secciones y consulta explícita en la con
   assert.match(read(dir, 'dist/a.css'), /-webkit-user-select/);
 });
 
+let sharpLib = null;
+try {
+  sharpLib = (await import('sharp')).default;
+} catch {
+  // sharp necesita Node 20+: en Node 16/18 estas pruebas se saltan.
+}
+
+test(
+  'imágenes: PNG sin pérdida (mismos píxeles), JPEG más pequeño con metadatos; lo ya optimizado se copia',
+  { skip: !sharpLib && 'sharp no disponible' },
+  async () => {
+    const sharp = sharpLib;
+    const width = 64;
+    const height = 48;
+    const raw = Buffer.alloc(width * height * 3);
+    for (let i = 0; i < raw.length; i += 3) {
+      raw[i] = ((i / 3) % width) * 4;
+      raw[i + 1] = Math.floor(i / 3 / width) * 5;
+      raw[i + 2] = 128;
+    }
+    const img = () => sharp(raw, { raw: { width, height, channels: 3 } });
+    const png = await img().png({ compressionLevel: 0 }).toBuffer();
+    const jpg = await img().jpeg({ quality: 100 }).withMetadata({ orientation: 6 }).toBuffer();
+    const tiny = await img().png({ compressionLevel: 9, palette: true, colours: 2 }).toBuffer();
+    const dir = tempDir();
+    writeFiles(dir, { 'index.html': page('<img src="a.png"><img src="b.jpg"><img src="c.png"><img src="d.gif">') });
+    fs.writeFileSync(path.join(dir, 'a.png'), png);
+    fs.writeFileSync(path.join(dir, 'b.jpg'), jpg);
+    fs.writeFileSync(path.join(dir, 'c.png'), tiny);
+    fs.writeFileSync(path.join(dir, 'd.gif'), Buffer.from('R0lGODlhAQABAAAAACw=', 'base64'));
+    const r = await buildDir(dir, { images: true });
+    const outPng = fs.readFileSync(path.join(dir, 'dist/a.png'));
+    const outJpg = fs.readFileSync(path.join(dir, 'dist/b.jpg'));
+    assert.ok(outPng.length < png.length, 'PNG más pequeño');
+    const [p1, p2] = await Promise.all([sharp(png).raw().toBuffer(), sharp(outPng).raw().toBuffer()]);
+    assert.ok(p1.equals(p2), 'PNG con exactamente los mismos píxeles');
+    assert.ok(outJpg.length < jpg.length, 'JPEG más pequeño');
+    const mj = await sharp(outJpg).metadata();
+    assert.equal(mj.width, width);
+    assert.equal(mj.orientation, 6, 'conserva la orientación EXIF');
+    assert.ok(fs.readFileSync(path.join(dir, 'dist/d.gif')).equals(fs.readFileSync(path.join(dir, 'd.gif'))), 'GIF intacto');
+    const cov = Object.fromEntries(r.coverage);
+    assert.match(cov['a.png'][0], /imagen optimizada/);
+    assert.match(cov['c.png'][0], /copiado \(ya estaba optimizada\)/);
+    assert.equal(r.report.rows.find((x) => x.file === 'a.png').action, 'image');
+    // Sin --images no se toca ninguna imagen.
+    const off = tempDir();
+    writeFiles(off, { 'index.html': page('<img src="a.png">') });
+    fs.writeFileSync(path.join(off, 'a.png'), png);
+    await buildDir(off);
+    assert.ok(fs.readFileSync(path.join(off, 'dist/a.png')).equals(png));
+  },
+);
+
 test('dependencias: un archivo con el nombre de un paquete de package.json', async () => {
   const dir = tempDir();
   writeFiles(dir, {

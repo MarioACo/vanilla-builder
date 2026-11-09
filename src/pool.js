@@ -285,7 +285,7 @@ export function createHeavy({ root, workers = autoWorkers(), cacheDir = null }) 
       const key = cacheDir
         ? crypto
             .createHash('sha256')
-            .update(JSON.stringify([CACHE_FORMAT, kind]))
+            .update(JSON.stringify([CACHE_FORMAT, OWN_VERSION, getLang(), kind]))
             .update('\0')
             .update(keyData)
             .digest('hex')

@@ -47,6 +47,8 @@ export const DEFAULTS = {
   workers: 'auto',
   // Navegadores objetivo: 'auto' (browserslist del proyecto si existe), false, o una consulta de browserslist.
   browsers: 'auto',
+  // Optimizar PNG (sin pérdida) y JPEG/WebP (calidad indicada) con sharp: false, true o { quality: 80 }.
+  images: false,
 };
 
 const NESTED = ['html', 'css', 'js', 'json', 'dependencies'];
@@ -154,6 +156,16 @@ export function normalizeConfig(raw, errors = []) {
         '"browsers" must be "auto", false or a browserslist query (text or list).',
       ),
     );
+  const im = cfg.images;
+  if (!(
+    typeof im === 'boolean' ||
+    (im &&
+      typeof im === 'object' &&
+      !Array.isArray(im) &&
+      Object.keys(im).every((k) => k === 'quality') &&
+      (im.quality === undefined || (Number.isInteger(im.quality) && im.quality >= 1 && im.quality <= 100)))
+  ))
+    errors.push(L('"images" debe ser true, false o { "quality": 1-100 }.', '"images" must be true, false or { "quality": 1-100 }.'));
   if (typeof cfg.cache !== 'boolean') errors.push(L('"cache" debe ser true o false.', '"cache" must be true or false.'));
   if (!(cfg.workers === 'auto' || (Number.isInteger(cfg.workers) && cfg.workers >= 0 && cfg.workers <= 64)))
     errors.push(L('"workers" debe ser "auto" o un número entre 0 y 64.', '"workers" must be "auto" or a number between 0 and 64.'));
