@@ -22,6 +22,7 @@ mi-sitio/                         mi-sitio/dist/
 ## Contenido
 
 - [Por qué vanilla-builder](#por-qué-vanilla-builder)
+- [Comparación](#comparación)
 - [Requisitos](#requisitos)
 - [Inicio rápido](#inicio-rápido)
 - [Tareas habituales](#tareas-habituales)
@@ -29,6 +30,8 @@ mi-sitio/                         mi-sitio/dist/
 - [Librerías de terceros y ofuscación](#librerías-de-terceros-y-ofuscación)
 - [TypeScript](#typescript)
 - [Configuración](#configuración)
+- [Plugins](#plugins)
+- [GitHub Action](#github-action)
 - [Referencia de la línea de comandos](#referencia-de-la-línea-de-comandos)
 - [Garantías de seguridad](#garantías-de-seguridad)
 - [Rendimiento](#rendimiento)
@@ -48,11 +51,33 @@ Herramientas como Vite o webpack dan por hecho una aplicación con un punto de e
 - **Ofuscación que respeta las librerías.** Tu código queda protegido; jQuery, Bootstrap y los paquetes de npm se detectan y se dejan como están. Puedes corregir la detección en una línea.
 - **TypeScript sin configurar nada.** `<script src="app.ts">` funciona; la salida es `.js`.
 - **Rápido.** Hilos en paralelo y caché persistente: recompilar un sitio de 40 páginas ofuscado tarda menos de 2 segundos ([cifras](#rendimiento)).
+- **Lo necesario para producción, incluido.** Navegadores objetivo con `browserslist`, optimización de imágenes opcional, presupuestos de tamaño que hacen fallar la CI, plugins y una GitHub Action con un informe de tamaños en cada pull request.
+
+## Comparación
+
+Los mismos sitios de prueba compilados con la configuración por defecto de cada herramienta para un sitio de varias páginas, y abiertos en Chromium junto al original ([resultados completos y método](bench/compare/RESULTS.md); se reproduce con `cd bench/compare && npm install && node run.mjs`):
+
+| Sitio de prueba | vanilla-builder | Parcel 2.16 | Vite 8.3 |
+| --- | --- | --- | --- |
+| Scripts clásicos que comparten globales, un worker, una librería copiada | ✅ idéntico | ❌ no compila (worker creado desde un texto) | ❌ 404: no publica los scripts clásicos |
+| Módulos ES, import map, service worker, CSS module script | ✅ idéntico | ❌ no compila (service worker desde un texto) | ❌ no compila (atributo de import CSS) |
+| Paquetes de npm desde módulos y scripts clásicos | ✅ idéntico | ✅ idéntico | ❌ 404: no publica los scripts clásicos |
+
+Tiempo y tamaño sobre un sitio generado de 40 páginas (en frío, sin caché), contando solo salidas cuyas páginas funcionan:
+
+| | Tiempo | Salida (gzip) |
+| --- | ---: | ---: |
+| vanilla-builder, publicando solo lo referenciado (`"unreferenced": "skip"`) | **1,2 s** | **64,8 KB** |
+| vanilla-builder, por defecto (publica también lo no referenciado) | 1,2 s | 156,6 KB |
+| Parcel | 2,1–2,9 s | 102,6 KB |
+| Vite | 0,3 s | — (salida rota: 12 problemas en 3 páginas de muestra, como 404 de scripts clásicos) |
+
+Estas herramientas apuntan a cosas distintas: Vite y Parcel brillan en aplicaciones con un punto de entrada y un grafo de módulos. vanilla-builder es para sitios que son una carpeta de páginas y tienen que seguir funcionando exactamente igual.
 
 ## Requisitos
 
 - **Node.js 16 o superior.** Probado en Node 16, 18, 20, 22 y 24, en Linux, Windows y macOS.
-- Opcionales, solo si los usas: [`javascript-obfuscator`](https://www.npmjs.com/package/javascript-obfuscator) para `--obfuscate` y [`terser`](https://www.npmjs.com/package/terser) para `--minifier terser`.
+- Opcionales, solo si los usas: [`javascript-obfuscator`](https://www.npmjs.com/package/javascript-obfuscator) para `--obfuscate`, [`terser`](https://www.npmjs.com/package/terser) para `--minifier terser`, [`browserslist`](https://www.npmjs.com/package/browserslist) para los navegadores objetivo y [`sharp`](https://www.npmjs.com/package/sharp) (Node 20+) para `--images`.
 
 En Node 16 y 17, npm muestra el aviso `EBADENGINE` porque esbuild declara Node 18+. Es solo un aviso: toda la batería de pruebas pasa con Node 16.
 
@@ -73,7 +98,7 @@ npx builder build
 El resultado queda en `dist/`. La terminal muestra una tabla con cada archivo de salida y su tamaño antes, después, con gzip y con brotli, y confirma la verificación:
 
 ```text
-✔ 3 html · 8 js · 1 css · 1 json · 4 svg · 1 text  (0.28 s)
+✔ 3 html · 8 js · 1 css · 1 json · 4 svg · 1 text  (0.21 s)
 ✔ Verificación: 18 archivos escritos, 17 referencias comprobadas, 8 JS válidos, 0 errores
 ✔ Cobertura: 21/21 archivos de origen con destino conocido
 ```
@@ -96,6 +121,10 @@ Si quieres, añade scripts a tu `package.json`:
 ```
 
 > Los comandos aceptan una carpeta: `npx builder build mi-sitio` compila `mi-sitio/` en `mi-sitio/dist/`. Sin carpeta, se usa la actual.
+>
+> Los mensajes salen en español si tu sistema está en español, y si no en inglés (elige con `--lang es|en` o `BUILDER_LANG`). Los campos de `--json` van siempre en inglés.
+
+¿Prefieres empezar por algo que ya funciona? Mira los [ejemplos](examples/): un sitio clásico de varias páginas, una app en TypeScript y una app ofuscada con presupuestos de tamaño.
 
 ## Tareas habituales
 
@@ -105,6 +134,8 @@ Si quieres, añade scripts a tu `package.json`:
 npx builder dev                 # compila, vigila cambios, sirve dist/ y recarga el navegador
 npx builder dev --port 3000 --open
 ```
+
+Cuando solo cambia CSS, las hojas de estilos se reemplazan sin recargar la página, así que conservas su estado.
 
 ### Publicar un sitio estático (Netlify, GitHub Pages, S3, nginx…)
 
@@ -134,6 +165,45 @@ npm install --save-dev terser
 npx builder build --minifier terser --drop-console
 ```
 
+### Dar soporte a navegadores antiguos
+
+Declara tus navegadores de la forma estándar y Builder los usa para CSS y JavaScript: añade los prefijos que falten (`-webkit-backdrop-filter`), aplana el CSS anidado y reescribe la sintaxis de JavaScript más nueva.
+
+```json
+// package.json
+{ "browserslist": ["> 0.5%", "last 2 versions", "not dead"] }
+```
+
+```bash
+npm install --save-dev browserslist
+```
+
+También sirve un archivo `.browserslistrc`, o `--browsers "<consulta>"`. Sin navegadores declarados, tu código conserva su propio nivel de sintaxis.
+
+### Optimizar imágenes
+
+```bash
+npm install --save-dev sharp
+npx builder build --images                 # PNG sin pérdida, JPEG/WebP con calidad 80
+npx builder build --image-quality 70
+```
+
+Los PNG se recomprimen sin pérdida y se comprueban píxel a píxel. Los JPEG y WebP se recodifican con la calidad elegida (con pérdida; visualmente equivalente con el valor por defecto), conservando la orientación EXIF y el perfil de color. Los nombres no cambian, y una imagen solo se reemplaza si el resultado es más pequeño.
+
+### Controlar el tamaño
+
+```json
+{
+  "budgets": {
+    "js/**/*.js": "50 KB",
+    "css/app.css": "20 KB gzip",
+    "total": "1 MB brotli"
+  }
+}
+```
+
+Si un archivo (o el total) supera su presupuesto, la compilación falla antes de tocar `dist/` y lista lo que se pasó. En CI también puedes usar `--budget "total=1MB gzip"`.
+
 ### Ver qué pasará antes de compilar
 
 ```bash
@@ -151,6 +221,7 @@ npx builder build --json > build-report.json
 - Código de salida `0` si todo va bien y distinto de cero si la compilación o la verificación fallan; en ese caso `dist/` no se toca y el JSON trae `"ok": false` con el error.
 - El JSON incluye salidas, tamaños, avisos, dependencias detectadas y el tiempo de cada fase (`perf.phases`).
 - Para reutilizar la caché entre ejecuciones, apunta `BUILDER_CACHE_DIR` a una carpeta que tu CI guarde.
+- En GitHub, la [GitHub Action](#github-action) hace todo esto y añade un informe de tamaños a cada ejecución y pull request.
 
 ## Cómo funciona
 
@@ -188,8 +259,9 @@ npx builder deps
 ```
 
 ```text
-Librerías de terceros (no se ofuscan) (2)
+Librerías de terceros (no se ofuscan) (3)
   • js/vendor/jquery.min.js — está en vendor/
+  • js/chart.js — se llama como el paquete "chart.js" de tu package.json
   • js/slider.js — envoltorio UMD/AMD (formato de librería publicada)
 
 Tu código (se ofusca con --obfuscate) (1)
@@ -298,6 +370,10 @@ También se acepta `builder.config.mjs`, que puede exportar un objeto o una func
 | `clean` | `true` | Reemplazar `outDir` por completo. Con `false`, los archivos nuevos se copian encima de los existentes. |
 | `cache` | `true` | Reutilizar resultados de compilaciones anteriores. |
 | `workers` | `"auto"` | Hilos para ofuscación y terser: `"auto"`, un número, o `0` para ninguno. |
+| `browsers` | `"auto"` | Navegadores objetivo: `"auto"` lee `.browserslistrc` o `browserslist` en `package.json`; o una consulta (`"> 0.5%, not dead"`); o `false`. Se aplica a `css.target` y `js.target` cuando tienen su valor por defecto. Necesita `browserslist`. |
+| `images` | `false` | `true` o `{ "quality": 1-100 }`: optimiza PNG (sin pérdida), JPEG y WebP. Necesita `sharp`. |
+| `budgets` | `false` | Límites de tamaño por patrón de salida o `"total"`: `{ "js/*.js": "50 KB", "total": "1 MB gzip" }`. Pasarse = compilación fallida. |
+| `plugins` | `[]` | Ver [Plugins](#plugins). |
 | `obfuscate` | `false` | `false`, `true` (= `"medium"`), `"low"`, `"medium"`, `"high"`, `"max"`, o un objeto con [opciones de javascript-obfuscator](https://github.com/javascript-obfuscator/javascript-obfuscator#javascript-obfuscator-options) y un `preset` opcional. |
 | `dependencies.detect` | `true` | Detectar librerías de terceros automáticamente. |
 | `dependencies.include` | `[]` | Patrones que son librerías (no se ofuscan). |
@@ -320,6 +396,50 @@ También se acepta `builder.config.mjs`, que puede exportar un objeto o una func
 | `js.legalComments` | `"eof"` | Dónde van los comentarios de licencia: `"eof"`, `"inline"` o `"none"`. |
 | `js.chunkDir` | `"assets"` | Carpeta para chunks compartidos, archivos con hash y paquetes vendor. |
 | `json.minify` | `true` | Quitar espacios de `.json` y `.webmanifest` (los valores nunca se reescriben). |
+
+## Plugins
+
+Para lo que Builder no hace por su cuenta. Un plugin es un objeto con ganchos; decláralo en `builder.config.mjs`:
+
+```js
+// builder.config.mjs
+export default {
+  plugins: [
+    {
+      name: 'version',
+      filter: /\.(html|js)$/,                  // opcional: qué archivos ve transform()
+      transform: ({ path, code }) => code.replaceAll('__VERSION__', '1.4.0'),
+      buildStart: ({ config, mode }) => {},     // antes de leer nada
+      buildEnd: ({ result, outDir }) => {},     // después de escribir dist/ (solo build)
+    },
+  ],
+};
+```
+
+- `transform` recibe el **código fuente** de cada HTML, CSS, JS y TS y devuelve el código nuevo (o nada para dejarlo igual). Se ejecuta antes de procesar, así que el hash, el SRI y la verificación final ven el resultado del plugin.
+- En `builder.config.json` se nombra un paquete instalado: `"plugins": ["mi-plugin", ["otro-plugin", { "opcion": 1 }]]`. El paquete exporta el objeto plugin, o una función que recibe las opciones y lo devuelve.
+- Si un plugin lanza un error, la compilación se detiene con un mensaje que nombra el plugin y el archivo.
+
+## GitHub Action
+
+```yaml
+# .github/workflows/build.yml
+on: [push, pull_request]
+permissions:
+  contents: read
+  pull-requests: write   # solo para comment: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: MarioACo/vanilla-builder@v0.3.0
+        with:
+          args: --hash --compress     # cualquier opción de build
+          comment: true               # informe de tamaños en los pull requests
+```
+
+Compila con una caché que se conserva entre ejecuciones, escribe un resumen de tamaños en la página de la ejecución, comenta en los pull requests (actualizando el mismo comentario en cada push) y hace fallar el trabajo si fallan la compilación, la verificación o un presupuesto. Entradas: `directory`, `args`, `version` (si el proyecto no instala vanilla-builder), `node-version`, `cache`, `comment`. Salidas: `total-size`, `total-gzip`, `report` (ruta del informe JSON).
 
 ## Referencia de la línea de comandos
 
@@ -360,6 +480,10 @@ builder <comando> [carpeta] [opciones]
 | `--unreferenced <modo>` | `process`, `copy` o `skip`. |
 | `--base <ruta>` | Ruta pública base, ej. `/tienda/`. |
 | `--workers <n\|auto>` | Número de hilos (`0` = ninguno). |
+| `--browsers <consulta>` / `--no-browsers` | Navegadores objetivo (consulta de browserslist) / ignorar los del proyecto. |
+| `--images`, `--image-quality <1-100>` | Optimizar imágenes (necesita `sharp`). |
+| `--budget <patrón=tamaño>` | Presupuesto de tamaño, ej. `"total=1MB gzip"`. Repetible; sustituye a los de la configuración. |
+| `--lang <en\|es>` | Idioma de los mensajes. |
 | `--no-cache` | Ignorar la caché. |
 | `--no-verify` | Saltarse la verificación final (no recomendado). |
 | `--force` | Permitir vaciar una carpeta de salida que no creó Builder. |
@@ -367,7 +491,7 @@ builder <comando> [carpeta] [opciones]
 | `--json` | Resultado legible por máquinas. |
 | `--verbose` / `--quiet` | Más detalle (notas, archivos copiados y excluidos) / solo errores. |
 
-`dev` y `serve` aceptan además `--port <n>` (por defecto `5173`), `--host <host>` (por defecto `127.0.0.1`) y `--open`.
+`dev` y `serve` aceptan además `--port <n>` (por defecto `5173`), `--host <host>` (por defecto `127.0.0.1`) y `--open`. Las opciones desconocidas se rechazan con una sugerencia (`--obfusacte` → ¿quisiste decir `--obfuscate`?).
 
 ## Garantías de seguridad
 
@@ -428,9 +552,13 @@ console.log(result.dependencies);       // [{ rel, reason }]
 
 Builder nunca vacía una carpeta que no creó. Elige otra con `--out`, vacíala tú o usa `--force` si estás seguro.
 
-### `Falta el paquete opcional "javascript-obfuscator"` (o `"terser"`)
+### `Falta el paquete opcional "javascript-obfuscator"` (o `terser`, `browserslist`, `sharp`)
 
-Instálalo en tu proyecto: `npm install --save-dev javascript-obfuscator`. Es opcional para que la instalación base sea pequeña.
+Instálalo en tu proyecto, por ejemplo `npm install --save-dev javascript-obfuscator`. Son opcionales para que la instalación base sea pequeña.
+
+### `hay navegadores objetivo en package.json (browserslist), pero falta el paquete "browserslist"`
+
+Tu proyecto declara navegadores (quizá para otra herramienta) pero `browserslist` no está instalado, así que Builder deja tu código como está. Instálalo (`npm install --save-dev browserslist`) para usarlos, o pon `"browsers": false` para quitar el aviso.
 
 ### Falta un archivo en `dist/`
 
@@ -459,6 +587,7 @@ Compila con `--no-minify` para descartar la minificación, o sin `--obfuscate` p
 - Colapsar espacios del HTML cambia `textContent`, pero no lo que se ve. Para conservar el texto byte a byte: `"html": { "collapseWhitespace": false }`.
 - Un `import()` con ruta totalmente calculada hace que ese grupo de módulos se minifique archivo por archivo en vez de empaquetarse, para que las rutas sigan funcionando.
 - TypeScript: no se comprueban tipos, no hay `.tsx`/JSX, y los source maps apuntan al JavaScript ya sin tipos.
+- `--images` recodifica JPEG y WebP con pérdida (PNG es sin pérdida). No se generan formatos modernos (WebP/AVIF a partir de JPEG), porque habría que cambiar tu HTML.
 
 ## Contribuir
 
@@ -471,6 +600,7 @@ npm install
 npm test               # pruebas unitarias y de integración (Node 18+; en Node 16: npm run test:node16)
 npm run test:browser   # sitios originales frente a compilados en Chromium (usa Chrome/Edge o BUILDER_CHROMIUM)
 npm run bench          # rendimiento sobre un sitio generado
+cd bench/compare && npm install && node run.mjs   # comparación con Parcel y Vite
 ```
 
 ## Licencia

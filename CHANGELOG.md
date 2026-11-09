@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-11-09
+
+### Added
+
+- **English messages** by default, Spanish when the system is in Spanish; choose with `--lang en|es` or `BUILDER_LANG`. `--json` field names and `perf.phases` names are always English.
+- **Target browsers** from `browserslist` (`.browserslistrc` or `package.json`), the new `browsers` option or `--browsers`: vendor prefixes, flattened CSS nesting and lowered JS syntax. Optional peer `browserslist`.
+- **Image optimization** (`images`, `--images`, `--image-quality`): PNG recompressed losslessly and checked pixel by pixel; JPEG/WebP re-encoded at a chosen quality, keeping metadata. Optional peer `sharp`.
+- **Size budgets** (`budgets`, `--budget pattern=size`): per pattern or total, by size, gzip or brotli; going over fails the build before touching `dist/`.
+- **Plugins** with `transform` (on the source, before processing), `buildStart` and `buildEnd`; as objects in `builder.config.mjs` or package names in JSON.
+- **GitHub Action** (`uses: MarioACo/vanilla-builder@v0.3.0`): cached builds, size summary, self-updating PR comment, outputs.
+- `builder dev` reloads only the stylesheets when only CSS changed, keeping page state.
+- Runnable `examples/` (classic site, TypeScript, protected app), checked by the test suite.
+- `bench/compare`: reproducible comparison with Parcel and Vite (correctness in Chromium, time, size).
+
+### Changed
+
+- Unknown command-line options are now errors with a suggestion, instead of being ignored.
+- Classic scripts transpiled for older browsers keep esbuild's temporary variables under a per-file prefix, instead of falling back to the untranspiled code.
+- Cache keys include the message language and, for images, the `sharp` version.
+
 ## [0.2.0] - 2026-11-09
 
 ### Added
@@ -37,5 +57,6 @@ First public release.
 - Projects opened through a symlink or junction (e.g. macOS `/tmp`) now build; the root is resolved to its real path.
 - MIT license, CI on Node 16–24 (Linux, Windows, macOS) and browser equivalence tests in Chrome.
 
+[0.3.0]: https://github.com/MarioACo/vanilla-builder/releases/tag/v0.3.0
 [0.2.0]: https://github.com/MarioACo/vanilla-builder/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MarioACo/vanilla-builder/releases/tag/v0.1.0
