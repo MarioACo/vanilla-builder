@@ -245,6 +245,7 @@ function jsonResult(result) {
     notes: result.notes,
     verify: result.verify && { errors: result.verify.errors, stats: result.verify.stats },
     perf: result.perf,
+    budgets: result.budgets,
   };
 }
 
@@ -270,6 +271,10 @@ function printSummary(result, args) {
       `${C.green('✔')} Coverage: ${result.coverage.size}/${result.coverage.size} source files with a known destination`,
     ),
   );
+  if (result.budgets?.checked)
+    console.log(
+      `${C.green('✔')} ${L(`Presupuestos: ${result.budgets.checked} comprobados, todos dentro del límite`, `Budgets: ${result.budgets.checked} checked, all within limits`)}`,
+    );
   if (r.compressed)
     console.log(
       L(`${C.green('✔')} ${r.compressed} archivos precomprimidos (.gz/.br)`, `${C.green('✔')} ${r.compressed} precompressed files (.gz/.br)`),

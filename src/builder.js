@@ -24,6 +24,7 @@ import { assertSafeOutDir, writeStaging, swapIntoPlace, discardStaging, writeMan
 import { verifyOutput } from './verify.js';
 import { rewriteTsImports } from './jsimports.js';
 import { IMAGE_EXT, ensureSharp, imageOptions, optimizeImage } from './images.js';
+import { checkBudgets } from './budgets.js';
 import { buildReport } from './report.js';
 import {
   BuildError,
@@ -1191,6 +1192,11 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
 
   mark('size report');
   const report = await buildReport(ctx.outputs, ctx.heavy);
+  const budgets = checkBudgets(cfg.budgets, report);
+  for (const p of budgets.unmatched)
+    ctx.warn(L(`el presupuesto "${p}" no coincide con ningún archivo de salida`, `the budget "${p}" does not match any output file`));
+  // En analyze los excesos son avisos; en build detienen la compilación antes de escribir nada.
+  if (mode === 'analyze') for (const v of budgets.violations) ctx.warn(v);
   const result = {
     version: VERSION,
     root: cfg.root,
@@ -1211,6 +1217,7 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
     vendor: ctx.vendorPackages,
     obfuscated: !!ctx.obfuscatorOptions,
     report,
+    budgets,
     perf: Object.assign(ctx.heavy.stats, { phases }),
     verify: null,
     durationMs: 0,
@@ -1223,6 +1230,14 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
 
   mark('write and verify');
   // 12. Escritura, verificación y publicación
+  if (budgets.violations.length)
+    throw new BuildError(
+      L(
+        `${budgets.violations.length} archivo(s) superan su presupuesto de tamaño; no se tocó ${cfg.outDir}.`,
+        `${budgets.violations.length} file(s) exceed their size budget; ${cfg.outDir} was not touched.`,
+      ),
+      budgets.violations,
+    );
   let staging;
   try {
     staging = await writeStaging(cfg, ctx.outputs);

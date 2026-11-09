@@ -678,6 +678,36 @@ test(
   },
 );
 
+test('presupuestos: un exceso detiene la compilación sin tocar dist/; analyze solo avisa', async () => {
+  const { parseBudget } = await import('../src/budgets.js');
+  assert.deepEqual(parseBudget('50 KB'), { bytes: 51200, measure: 'size' });
+  assert.deepEqual(parseBudget('1.5 mb brotli'), { bytes: 1572864, measure: 'brotli' });
+  assert.deepEqual(parseBudget(300), { bytes: 300, measure: 'size' });
+  assert.equal(parseBudget('mucho'), null);
+  await assert.rejects(buildDir(tempDir(), { budgets: { 'js/*.js': 'mucho' } }), (err) => err.details.some((d) => /no es un tamaño válido/.test(d)));
+
+  const dir = tempDir();
+  writeFiles(dir, {
+    'index.html': page('<script src="js/grande.js"></script><script src="js/chico.js" defer></script>'),
+    'js/grande.js': `var datos = ${JSON.stringify(Array.from({ length: 300 }, (_, i) => `elemento número ${i}`))};\n`,
+    'js/chico.js': 'var x = 1;\n',
+  });
+  const ok = await buildDir(dir, { budgets: { 'js/chico.js': '1 KB', total: '50 KB gzip' } });
+  assert.equal(ok.budgets.checked, 2);
+  const before = read(dir, 'dist/index.html');
+  await assert.rejects(
+    buildDir(dir, { budgets: { 'js/*.js': '2 KB', 'js/nada/*.js': '1 KB' } }),
+    (err) =>
+      /superan su presupuesto/.test(err.message) &&
+      err.details.some((d) => d.startsWith('js/grande.js')) &&
+      !err.details.some((d) => d.startsWith('js/chico.js')),
+  );
+  assert.equal(read(dir, 'dist/index.html'), before, 'dist/ no se tocó');
+  const a = await analyze({ dir, overrides: { budgets: { 'js/*.js': '2 KB', 'js/nada/*.js': '1 KB' } } });
+  assert.ok(a.warnings.some((w) => /js\/grande\.js.*supera el presupuesto/.test(w)));
+  assert.ok(a.warnings.some((w) => /"js\/nada\/\*\.js" no coincide/.test(w)));
+});
+
 test('dependencias: un archivo con el nombre de un paquete de package.json', async () => {
   const dir = tempDir();
   writeFiles(dir, {
