@@ -63,6 +63,7 @@ Opciones de build:
   --json                   Resultado en JSON (para CI)
   --verbose                Muestra notas, archivos copiados y excluidos
   --quiet                  Solo errores
+  --browsers <consulta>    Navegadores objetivo (browserslist), ej. "> 0.5%, not dead"; --no-browsers los ignora
   --lang <en|es>           Idioma de los mensajes (por defecto: el del sistema; o BUILDER_LANG)
 `,
     `Builder ${VERSION} — bundle, minify and obfuscate vanilla web projects (HTML, CSS and JS)
@@ -110,6 +111,7 @@ Build options:
   --json                   JSON result (for CI)
   --verbose                Show notes, copied and excluded files
   --quiet                  Errors only
+  --browsers <query>       Target browsers (browserslist), e.g. "> 0.5%, not dead"; --no-browsers ignores them
   --lang <en|es>           Message language (default: system language; or BUILDER_LANG)
 `,
   );
@@ -133,6 +135,7 @@ function parseArgs(argv) {
     'workers',
     'dir',
     'lang',
+    'browsers',
   ]);
   const optionalValue = { obfuscate: ['low', 'medium', 'high', 'max'], sourcemap: ['linked', 'hidden', 'inline'], compress: ['gzip', 'brotli'] };
   for (let i = 0; i < argv.length; i++) {
@@ -170,6 +173,8 @@ function overridesFrom(args) {
   if (args.verify === false) o.verify = false;
   if (args.compress !== undefined) o.compress = args.compress;
   if (args.cache === false) o.cache = false;
+  if (args.browsers === false) o.browsers = false;
+  else if (typeof args.browsers === 'string') o.browsers = args.browsers;
   if (args.workers !== undefined) {
     const n = Number(args.workers);
     if (args.workers !== 'auto' && !(Number.isInteger(n) && n >= 0))

@@ -64,7 +64,8 @@
   },
   "peerDependencies": {
     "javascript-obfuscator": ">=4.1.1 <6",
-    "terser": "^5.31.0"
+    "terser": "^5.31.0",
+    "browserslist": "^4.21.0"
   },
   "peerDependenciesMeta": {
     "javascript-obfuscator": {
@@ -72,9 +73,13 @@
     },
     "terser": {
       "optional": true
+    },
+    "browserslist": {
+      "optional": true
     }
   },
   "devDependencies": {
+    "browserslist": "4.29.4",
     "javascript-obfuscator": "5.9.0",
     "playwright-core": "1.63.0",
     "terser": "5.51.2"

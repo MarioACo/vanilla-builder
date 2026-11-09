@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import * as esbuild from 'esbuild';
 import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
-import { analyzeJs, compareGlobals } from './jsinfo.js';
+import { analyzeJs, compareGlobals, isolateTempGlobals } from './jsinfo.js';
 import { importOptional } from './optional.js';
 import { replaceWithMap } from './sourcemap.js';
 import { relFrom, toPosix, BuildError, rootPrefix, hasOwn, shortHash, jsOutPath } from './util.js';
@@ -56,32 +56,57 @@ export async function processClassic(ctx, { code, id, info, obfuscate, sourcemap
   const notes = [];
   let out = code;
   let map = null;
+  let allowPrefix = null;
   if (js.minify) {
     const auto = await targetForLevel(info.level);
     const attempts = [{ target: js.target === 'auto' ? auto : js.target, keepNames: js.keepNames, label: L('completa', 'full') }];
     if (js.target !== 'auto' || js.keepNames) attempts.push({ target: auto, keepNames: false, label: L('sin transpilar', 'without transpiling') });
     attempts.push({ target: auto, keepNames: false, whitespace: true, label: L('solo espacios', 'whitespace only') });
     let done = false;
+    // Mismo prefijo que usa el ofuscador para sus nombres: las comprobaciones posteriores ya lo aceptan.
+    const tempPrefix = `_${shortHash(id, 6)}`;
+    const transform = (input, a, extra = {}) =>
+      esbuild.transform(input, {
+        loader: 'js',
+        target: a.target,
+        charset: 'ascii',
+        supported: SUPPORTED,
+        legalComments: js.legalComments,
+        drop: js.drop,
+        define: js.define,
+        keepNames: a.keepNames,
+        sourcemap: sourcemap ? 'external' : false,
+        sourcefile: id,
+        ...(a.whitespace ? { minifyWhitespace: true } : { minify: true }),
+        logLevel: 'silent',
+        ...extra,
+      });
     for (const a of attempts) {
       try {
-        const r = await esbuild.transform(code, {
-          loader: 'js',
-          target: a.target,
-          charset: 'ascii',
-          supported: SUPPORTED,
-          legalComments: js.legalComments,
-          drop: js.drop,
-          define: js.define,
-          keepNames: a.keepNames,
-          sourcemap: sourcemap ? 'external' : false,
-          sourcefile: id,
-          ...(a.whitespace ? { minifyWhitespace: true } : { minify: true }),
-          logLevel: 'silent',
-        });
-        const cmp = compareGlobals(info.top, r.code);
+        const r = await transform(code, a);
+        let candidate = r.code;
+        let cmp = compareGlobals(info.top, candidate);
+        let isolated = false;
+        if (!cmp.ok && !a.whitespace && a.target !== auto) {
+          // Al adaptar la sintaxis, esbuild declara temporales globales (var _a). Se adapta sin minificar
+          // (nombres reconocibles), se aíslan con un prefijo propio del archivo y después se minifica:
+          // la minificación no renombra globales de un script clásico ni crea temporales nuevas.
+          const lowered = await transform(code, a, { minify: false, minifyWhitespace: false, sourcemap: false });
+          const iso = isolateTempGlobals(lowered.code, info.top, tempPrefix);
+          if (iso) {
+            const r2 = await transform(iso, a, { sourcemap: false });
+            const cmp2 = compareGlobals(info.top, r2.code, tempPrefix);
+            if (cmp2.ok) {
+              candidate = r2.code;
+              cmp = cmp2;
+              isolated = true;
+            }
+          }
+        }
         if (cmp.ok) {
-          out = r.code;
-          map = r.map || null;
+          out = candidate;
+          map = isolated ? null : r.map || null;
+          if (isolated) allowPrefix = tempPrefix;
           done = true;
           break;
         }
@@ -99,7 +124,7 @@ export async function processClassic(ctx, { code, id, info, obfuscate, sourcemap
       map = null;
     } else notes.push(L(`no se ofuscó: ${o.reason}`, `not obfuscated: ${o.reason}`));
   } else if (out !== code) {
-    const t = await terserPass(ctx, out, { isModule: false, level: info.level, globals: info.top });
+    const t = await terserPass(ctx, out, { isModule: false, level: info.level, globals: info.top, allowPrefix });
     if (t !== out) {
       out = t;
       map = null;
@@ -350,10 +375,10 @@ export async function ensureTerser(projectRoot) {
  * Segunda pasada con terser (varias pasadas de compresión). Solo se acepta si el resultado
  * es más pequeño y conserva globales (scripts) o exportaciones/importaciones (módulos).
  */
-export async function terserPass(ctx, code, { isModule, level, globals }) {
+export async function terserPass(ctx, code, { isModule, level, globals, allowPrefix = null }) {
   const js = ctx.cfg.js;
   if (!terser || js.minifier !== 'terser' || !js.minify || ctx.cfg.sourcemap) return code;
-  return ctx.heavy.terser(code, { isModule, level, globals: isModule ? undefined : globals, keepNames: js.keepNames });
+  return ctx.heavy.terser(code, { isModule, level, globals: isModule ? undefined : globals, allowPrefix, keepNames: js.keepNames });
 }
 
 /** Bytes de origen que aportaron código a una salida (incluye paquetes de node_modules). */

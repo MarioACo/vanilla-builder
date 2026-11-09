@@ -250,6 +250,51 @@ export function checkSyntax(code, isModule) {
   }
 }
 
+// Nombres que esbuild crea al adaptar sintaxis a navegadores antiguos: temporales (_a, _b2) y ayudantes (__async).
+const ESBUILD_TEMP = /^(_[a-z]\d*|__[A-Za-z]+\d*)$/;
+
+/**
+ * Al transpilar un script clásico, esbuild puede declarar temporales en el ámbito global (var _a).
+ * Si TODAS las globales nuevas son de ese tipo, se renombran en todo el archivo a `${prefix}nombre`
+ * (único por archivo), así no pueden chocar con otros scripts. Devuelve el código nuevo, o null si no aplica.
+ * El renombrado es consistente en todos los ámbitos, así que no cambia el significado del código.
+ */
+export function isolateTempGlobals(code, before, prefix) {
+  let ast;
+  try {
+    ast = parse(code, 'script', LATEST);
+  } catch {
+    return null;
+  }
+  const top = globalBindings(
+    ast,
+    ast.body.some((s) => s.directive === 'use strict'),
+  );
+  const fresh = [...top.keys()].filter((n) => !before.has(n));
+  if (!fresh.length || !fresh.every((n) => ESBUILD_TEMP.test(n))) return null;
+  const rename = new Map(fresh.map((n) => [n, `${prefix}${n}`]));
+  const edits = new Map();
+  walk.fullAncestor(ast, (node, _state, ancestors) => {
+    if (node.type !== 'Identifier' || !rename.has(node.name)) return;
+    const p = ancestors[ancestors.length - 2];
+    const to = rename.get(node.name);
+    if (p) {
+      if (p.type === 'MemberExpression' && p.property === node && !p.computed) return;
+      if (p.type === 'Property' && p.shorthand) {
+        // { _a } → { _a: nuevo }: la clave se conserva, el valor se renombra.
+        edits.set(node.start, { start: node.start, end: node.end, text: `${node.name}: ${to}` });
+        return;
+      }
+      if ((p.type === 'Property' || p.type === 'MethodDefinition' || p.type === 'PropertyDefinition') && p.key === node && !p.computed) return;
+      if (p.type === 'LabeledStatement' || p.type === 'BreakStatement' || p.type === 'ContinueStatement') return;
+    }
+    if (!edits.has(node.start)) edits.set(node.start, { start: node.start, end: node.end, text: to });
+  });
+  let out = code;
+  for (const e of [...edits.values()].sort((a, b) => b.start - a.start)) out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  return out;
+}
+
 /**
  * Compara las globales de un script antes y después de transformarlo.
  * `allowPrefix` permite nombres nuevos con ese prefijo (los que añade el ofuscador).

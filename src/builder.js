@@ -734,6 +734,30 @@ export async function runPipeline(cfg, opts = {}) {
 
 async function pipeline(ctx, cfg, opts, mode, t0) {
   const log = opts.log ?? (() => {});
+  const bt = cfg.browserTargets;
+  if (bt?.missing)
+    ctx.warn(
+      L(
+        `hay navegadores objetivo en ${bt.from}, pero falta el paquete "browserslist"; se ignoran (instálalo con: npm install --save-dev browserslist)`,
+        `target browsers are set in ${bt.from}, but the "browserslist" package is missing; they are ignored (install it with: npm install --save-dev browserslist)`,
+      ),
+    );
+  else if (bt?.targets?.length) {
+    log(L(`Navegadores (${bt.from}): ${bt.targets.join(', ')}`, `Browsers (${bt.from}): ${bt.targets.join(', ')}`));
+    if (bt.ignored.length)
+      ctx.note(
+        L(
+          `navegadores sin motor equivalente en esbuild (se usan los demás): ${bt.ignored.join(', ')}`,
+          `browsers without an equivalent esbuild engine (the others are used): ${bt.ignored.join(', ')}`,
+        ),
+      );
+  } else if (bt && !bt.targets?.length)
+    ctx.warn(
+      L(
+        `la consulta de navegadores de ${bt.from} no da ningún navegador conocido; se ignora`,
+        `the browsers query in ${bt.from} matches no known browser; ignored`,
+      ),
+    );
   // Tiempo de cada fase (perf.phases): para saber dónde se va el tiempo en proyectos reales.
   const phases = [];
   let phaseStart = Date.now();

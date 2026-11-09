@@ -585,6 +585,45 @@ test('idioma: en inglés, las comparaciones de estados internos siguen funcionan
   }
 });
 
+test('navegadores: browserslist del proyecto añade prefijos y adapta CSS y JS; browsers: false lo desactiva', async () => {
+  const files = {
+    'package.json': JSON.stringify({ name: 'demo', browserslist: ['safari 13'] }),
+    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="app.css"></head><body><script src="app.js"></script></body></html>',
+    'app.css': '.card { backdrop-filter: blur(4px); & .title { color: red; } }\n',
+    'app.js': 'var opciones = window.config ?? { modo: "claro" };\n',
+  };
+  const dir = tempDir();
+  writeFiles(dir, files);
+  const r = await buildDir(dir);
+  const css = read(dir, 'dist/app.css');
+  assert.match(css, /-webkit-backdrop-filter/, 'prefijo para Safari 13');
+  assert.match(css, /\.card \.title/, 'CSS anidado aplanado');
+  assert.doesNotMatch(read(dir, 'dist/app.js'), /\?\?/, '?? adaptado para Safari 13');
+  assert.equal(r.warnings.length, 0, r.warnings.join('\n'));
+
+  const off = tempDir();
+  writeFiles(off, files);
+  await buildDir(off, { browsers: false });
+  assert.doesNotMatch(read(off, 'dist/app.css'), /-webkit-backdrop-filter/);
+  assert.match(read(off, 'dist/app.js'), /\?\?/);
+});
+
+test('navegadores: .browserslistrc con secciones y consulta explícita en la configuración', async () => {
+  const { findBrowsersQuery, toEsbuildTargets } = await import('../src/browsers.js');
+  const dir = tempDir();
+  writeFiles(dir, { '.browserslistrc': '# comentario\nchrome 100\n\n[production]\nfirefox 115\n[development]\nlast 1 chrome version\n' });
+  assert.deepEqual(findBrowsersQuery(dir, 'auto'), { query: 'firefox 115', from: '.browserslistrc' });
+  assert.equal(findBrowsersQuery(dir, false), null);
+  assert.deepEqual(findBrowsersQuery(dir, 'safari 15'), { query: 'safari 15', from: 'browsers' });
+  assert.deepEqual(toEsbuildTargets(['chrome 120', 'chrome 109', 'ios_saf 18.5-18.7', 'and_chr 130', 'samsung 30', 'ie 11', 'safari TP']), {
+    targets: ['chrome109', 'ios18.5'],
+    ignored: ['ie', 'safari', 'samsung'],
+  });
+  writeFiles(dir, { 'index.html': page('<p>x</p>'), 'a.css': 'a { user-select: none; }' });
+  await buildDir(dir, { browsers: 'safari 13', include: ['a.css'] });
+  assert.match(read(dir, 'dist/a.css'), /-webkit-user-select/);
+});
+
 test('dependencias: un archivo con el nombre de un paquete de package.json', async () => {
   const dir = tempDir();
   writeFiles(dir, {

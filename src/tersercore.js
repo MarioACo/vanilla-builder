@@ -5,7 +5,7 @@ import { compareGlobals, moduleShape } from './jsinfo.js';
  * Comprime con terser y solo acepta el resultado si es más pequeño y conserva las globales (scripts)
  * o las exportaciones/importaciones (módulos). Devuelve el código original si no compensa.
  */
-export async function terserMinify(terser, code, { isModule, level, globals, keepNames = false }) {
+export async function terserMinify(terser, code, { isModule, level, globals, allowPrefix = null, keepNames = false }) {
   const ecma = Math.min(2020, Math.max(5, level ?? 2020));
   let out;
   try {
@@ -28,6 +28,6 @@ export async function terserMinify(terser, code, { isModule, level, globals, kee
     const a = moduleShape(code);
     const b = moduleShape(out);
     if (!a || !b || a.exports !== b.exports || a.imports !== b.imports) return code;
-  } else if (!globals || !compareGlobals(globals, out).ok) return code;
+  } else if (!globals || !compareGlobals(globals, out, allowPrefix).ok) return code;
   return out;
 }

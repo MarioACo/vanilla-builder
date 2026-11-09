@@ -215,3 +215,30 @@ test('configuración: avisa de opciones mal escritas con sugerencia', () => {
   assert.equal(cfg.obfuscate, 'medium');
   assert.equal(cfg.base, '/sitio/');
 });
+
+test('isolateTempGlobals: renombra solo temporales de esbuild, de forma consistente', async () => {
+  const { isolateTempGlobals } = await import('../src/jsinfo.js');
+  // Globales del usuario: todo menos las temporales que añadió esbuild.
+  const before = new Map([
+    ['x', 'var'],
+    ['o', 'var'],
+    ['f', 'var'],
+    ['z', 'var'],
+  ]);
+  const code = [
+    'var _a, __async = function () {}, x = 1;',
+    'var o = { _a, y: _a, k: obj._a };',
+    'function f(_a) { return _a + 1; }',
+    '_a: for (;;) { break _a; }',
+    'var { _a: z = _a } = o;',
+  ].join('\n');
+  const out = isolateTempGlobals(code, before, '_p_');
+  const top = analyzeJs(out, { module: false }).top;
+  assert.deepEqual([...top.keys()].sort(), ['_p___async', '_p__a', 'f', 'o', 'x', 'z'].sort());
+  assert.match(out, /\{ _a: _p__a, y: _p__a, k: obj\._a \}/, 'abreviada expandida y propiedad intacta');
+  assert.match(out, /_a: for \(;;\) \{ break _a; \}/, 'etiquetas intactas');
+  assert.match(out, /function f\(_p__a\) \{ return _p__a \+ 1; \}/, 'sombreado renombrado de forma consistente');
+  // Una global nueva que no es temporal de esbuild: no se toca nada.
+  assert.equal(isolateTempGlobals('var x = 1, nueva = 2;', before, '_p_'), null);
+  assert.equal(isolateTempGlobals('var x = 1;', before, '_p_'), null);
+});

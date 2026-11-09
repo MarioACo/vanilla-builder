@@ -4,6 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BuildError } from './util.js';
 import { L } from './i18n.js';
+import { resolveBrowsers } from './browsers.js';
 
 export const CONFIG_FILES = ['builder.config.json', 'builder.config.mjs', 'builder.config.js'];
 
@@ -44,6 +45,8 @@ export const DEFAULTS = {
   cache: true,
   // Hilos para ofuscar/comprimir en paralelo: "auto" (núcleos - 1, máx. 8), un número, o 0 (sin hilos).
   workers: 'auto',
+  // Navegadores objetivo: 'auto' (browserslist del proyecto si existe), false, o una consulta de browserslist.
+  browsers: 'auto',
 };
 
 const NESTED = ['html', 'css', 'js', 'json', 'dependencies'];
@@ -138,6 +141,19 @@ export function normalizeConfig(raw, errors = []) {
     errors.push(L('"base" debe empezar con "/" (ej. "/" o "/mi-sitio/").', '"base" must start with "/" (e.g. "/" or "/my-site/").'));
   else if (!cfg.base.endsWith('/')) cfg.base += '/';
   if (typeof cfg.hash !== 'boolean') errors.push(L('"hash" debe ser true o false.', '"hash" must be true or false.'));
+  const b = cfg.browsers;
+  if (!(
+    b === 'auto' ||
+    b === false ||
+    (typeof b === 'string' && b.trim()) ||
+    (Array.isArray(b) && b.length && b.every((x) => typeof x === 'string'))
+  ))
+    errors.push(
+      L(
+        '"browsers" debe ser "auto", false o una consulta de browserslist (texto o lista).',
+        '"browsers" must be "auto", false or a browserslist query (text or list).',
+      ),
+    );
   if (typeof cfg.cache !== 'boolean') errors.push(L('"cache" debe ser true o false.', '"cache" must be true or false.'));
   if (!(cfg.workers === 'auto' || (Number.isInteger(cfg.workers) && cfg.workers >= 0 && cfg.workers <= 64)))
     errors.push(L('"workers" debe ser "auto" o un número entre 0 y 64.', '"workers" must be "auto" or a number between 0 and 64.'));
@@ -218,6 +234,13 @@ export async function loadConfig({ dir = '.', config, overrides = {}, cwd = proc
   cfg.root = fs.realpathSync(cfg.root);
   cfg.outDir = path.resolve(cfg.root, cfg.outDir);
   cfg.configFile = configFile;
+  // Navegadores objetivo (browserslist): solo cambian los targets que siguen con su valor por defecto.
+  cfg.browserTargets = await resolveBrowsers(cfg.root, cfg.browsers);
+  const targets = cfg.browserTargets?.targets;
+  if (targets?.length) {
+    if (cfg.css.target === DEFAULTS.css.target) cfg.css.target = targets;
+    if (cfg.js.target === DEFAULTS.js.target) cfg.js.target = targets;
+  }
   return cfg;
 }
 
