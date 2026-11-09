@@ -1,0 +1,14 @@
+{
+  "name": "protected-app-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "builder dev",
+    "build": "builder build",
+    "deps": "builder deps"
+  },
+  "devDependencies": {
+    "javascript-obfuscator": "^5.0.0",
+    "vanilla-builder": "^0.3.0"
+  }
+}

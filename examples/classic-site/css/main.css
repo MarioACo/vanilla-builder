@@ -1,0 +1,16 @@
+@import './base.css';
+@import './components.css';
+
+.site-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 2rem;
+  background: url('../img/header-bg.svg') center / cover;
+}
+
+main {
+  max-width: 40rem;
+  margin: 2rem auto;
+  padding: 0 1rem;
+}

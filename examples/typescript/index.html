@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TypeScript — vanilla-builder example</title>
+    <link rel="stylesheet" href="src/styles.css" />
+  </head>
+  <body>
+    <h1>Todo list in TypeScript</h1>
+    <form id="add">
+      <input name="title" placeholder="Something to do" required />
+      <button>Add</button>
+    </form>
+    <ul id="list"></ul>
+    <p id="summary"></p>
+    <!-- Point the HTML at the .ts file: the output is src/main.js and this tag is updated. -->
+    <script type="module" src="src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Classic site — vanilla-builder example</title>
+    <link rel="stylesheet" href="css/main.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <img src="img/logo.svg" alt="Logo" width="32" height="32" />
+      <nav>
+        <a href="index.html" aria-current="page">Home</a>
+        <a href="about.html">About</a>
+      </nav>
+    </header>
+
+    <main>
+      <h1>Hello from a plain HTML site</h1>
+      <p>Two pages, classic scripts that share globals, a third-party library and CSS split with <code>@import</code>.</p>
+
+      <div class="tabs" data-tabs>
+        <button data-tab="one" class="active">One</button>
+        <button data-tab="two">Two</button>
+        <section id="one">First tab content.</section>
+        <section id="two" hidden>Second tab content.</section>
+      </div>
+
+      <p>Clicks so far: <output id="clicks">0</output></p>
+      <button id="counter" type="button">Click me</button>
+    </main>
+
+    <!-- A copied third-party library: detected as a dependency, never obfuscated. -->
+    <script src="js/vendor/mini-tabs.min.js"></script>
+    <!-- Classic scripts that share globals: merged safely into one file. -->
+    <script src="js/state.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>

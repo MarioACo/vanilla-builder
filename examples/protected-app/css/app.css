@@ -1,0 +1,10 @@
+body {
+  max-width: 28rem;
+  margin: 3rem auto;
+  font-family: system-ui, sans-serif;
+}
+
+input {
+  width: 5rem;
+  margin-left: 0.5rem;
+}

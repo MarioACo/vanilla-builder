@@ -1,0 +1,10 @@
+{
+  "ignore": ["README.md"],
+  "obfuscate": "medium",
+  "hash": true,
+  "compress": true,
+  "budgets": {
+    "total": "50 KB gzip",
+    "assets/*.js": "30 KB"
+  }
+}

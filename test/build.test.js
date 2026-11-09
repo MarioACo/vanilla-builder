@@ -772,6 +772,44 @@ test('CLI: opciones desconocidas con sugerencia, --no-x y --budget', () => {
   assert.equal(cli(dir, 'build', '--budget', 'sin-igual').status, 1);
 });
 
+test('examples/: los tres ejemplos compilan sin avisos y hacen lo que dice su README', async () => {
+  const { cpSync } = fs;
+  const example = (name) => {
+    const dir = tempDir();
+    cpSync(path.join(path.dirname(CLI), '..', 'examples', name), dir, { recursive: true, filter: (src) => !/[\\/]dist([\\/]|$)/.test(src) });
+    return dir;
+  };
+  // Sitio clásico: scripts unidos, librería detectada, CSS con @import en un archivo.
+  const classic = example('classic-site');
+  const r1 = await buildDir(classic);
+  assert.deepEqual(r1.warnings, []);
+  assert.ok(
+    [...r1.outputs.keys()].some((k) => /^assets\/scripts-.*\.js$/.test(k)),
+    'state.js + app.js unidos',
+  );
+  assert.ok(r1.dependencies.some((d) => d.rel === 'js/vendor/mini-tabs.min.js'));
+  assert.ok(!exists(classic, 'dist/README.md'));
+  assert.match(read(classic, 'dist/about.html'), /Whitespace in {3}pre {3}is kept exactly\./);
+  // TypeScript.
+  const ts = example('typescript');
+  const r2 = await buildDir(ts);
+  assert.deepEqual(r2.warnings, []);
+  assert.ok(r2.outputs.has('src/main.js'));
+  assert.ok(![...r2.outputs.keys()].some((k) => k.endsWith('.ts')));
+  assert.match(read(ts, 'dist/index.html'), /src\/main\.js/);
+  // App protegida: ofuscación, librería intacta, hash, precompresión y presupuestos.
+  const prot = example('protected-app');
+  const r3 = await buildDir(prot);
+  assert.deepEqual(r3.warnings, []);
+  assert.equal(r3.budgets.checked > 1, true);
+  const vendor = [...r3.outputs.keys()].find((k) => k.includes('money-format') && k.endsWith('.js'));
+  assert.ok(vendor && !isObfuscated(read(prot, `dist/${vendor}`)), 'la librería no se ofusca');
+  assert.ok(
+    [...r3.outputs.keys()].some((k) => k.endsWith('.br')),
+    'precomprimido',
+  );
+});
+
 test('dependencias: un archivo con el nombre de un paquete de package.json', async () => {
   const dir = tempDir();
   writeFiles(dir, {
