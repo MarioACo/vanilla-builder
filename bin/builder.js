@@ -467,7 +467,7 @@ async function cmdDeps(_dir, args) {
     console.log(JSON.stringify({ dependencies: result.dependencies, own }, null, 2));
     return;
   }
-  console.log(`${C.bold(`Builder ${VERSION} — dependencias`)}  ${cfg.root}`);
+  console.log(`${C.bold(`Builder ${VERSION} — ${L('dependencias', 'dependencies')}`)}  ${cfg.root}`);
   printList(
     L('Librerías de terceros (no se ofuscan)', 'Third-party libraries (not obfuscated)'),
     [...deps].map(([rel, why]) => `${rel} ${C.gray(`— ${why}`)}`),
@@ -584,9 +584,12 @@ async function cmdDev(dir, args) {
   let srv = null;
   let running = false;
   let pending = false;
-  const rebuild = async (reason) => {
+  // files: archivos que cambiaron; si todos son CSS (y sin hash), basta con recargar las hojas de estilos.
+  let pendingFiles = [];
+  const rebuild = async (reason, files = null) => {
     if (running) {
       pending = true;
+      pendingFiles = files && pendingFiles ? [...pendingFiles, ...files] : null;
       return;
     }
     running = true;
@@ -599,7 +602,9 @@ async function cmdDev(dir, args) {
       );
       for (const w of result.warnings.slice(0, 5)) console.log(C.yellow(`  • ${w}`));
       srv?.buildOk();
-      srv?.reload();
+      const cssOnly = files?.length && !fresh.hash && files.every((f) => /\.css$/i.test(f));
+      if (cssOnly) srv?.reloadCss();
+      else srv?.reload();
     } catch (err) {
       console.error(C.red(`✖ ${err.message}`));
       for (const d of err.details ?? []) console.error(C.red(`  • ${d}`));
@@ -608,7 +613,9 @@ async function cmdDev(dir, args) {
       running = false;
       if (pending) {
         pending = false;
-        rebuild(L('cambios pendientes', 'pending changes'));
+        const next = pendingFiles;
+        pendingFiles = [];
+        rebuild(L('cambios pendientes', 'pending changes'), next);
       }
     }
   };
@@ -635,7 +642,7 @@ async function cmdDev(dir, args) {
     timer = setTimeout(() => {
       const list = [...changed];
       changed.clear();
-      rebuild(list.length === 1 ? list[0] : L(`${list.length} archivos`, `${list.length} files`));
+      rebuild(list.length === 1 ? list[0] : L(`${list.length} archivos`, `${list.length} files`), list);
     }, 150);
   });
 }

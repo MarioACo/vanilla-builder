@@ -43,6 +43,7 @@ const MIME = {
 
 const RELOAD_SCRIPT = `<script>(()=>{const s=new EventSource('/__builder/events');let box;
 s.addEventListener('reload',()=>location.reload());
+s.addEventListener('css',()=>{for(const l of document.querySelectorAll('link[rel~="stylesheet"][href]')){const u=new URL(l.href,location.href);if(u.origin!==location.origin)continue;u.searchParams.set('vb',Date.now());const n=l.cloneNode();n.href=u.href;n.onload=n.onerror=()=>l.remove();l.after(n)}});
 s.addEventListener('error-build',e=>{box??=document.body.appendChild(Object.assign(document.createElement('pre'),{style:'position:fixed;inset:auto 0 0 0;max-height:50vh;overflow:auto;margin:0;padding:12px;background:#300;color:#fdd;font:12px/1.4 monospace;z-index:2147483647;white-space:pre-wrap'}));box.textContent=JSON.parse(e.data)});
 s.addEventListener('ok',()=>{box?.remove();box=null});})();</script>`;
 
@@ -112,6 +113,8 @@ export function startServer({ dir, port = 5173, host = '127.0.0.1', liveReload =
         url: `http://${host === '0.0.0.0' ? 'localhost' : host}:${addr.port}/`,
         port: addr.port,
         reload: () => send('reload'),
+        // Solo cambió CSS: se recargan las hojas de estilos sin perder el estado de la página.
+        reloadCss: () => send('css'),
         buildError: (msg) => send('error-build', `${L('Builder: error al compilar', 'Builder: build failed')}\n\n${msg}`),
         buildOk: () => send('ok'),
         close: () =>

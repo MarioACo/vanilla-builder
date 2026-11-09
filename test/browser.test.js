@@ -38,3 +38,35 @@ for (const { fixture, pages } of SCENARIOS) {
     });
   }
 }
+
+test('dev: un cambio solo de CSS recarga las hojas de estilos sin recargar la página', { skip, timeout: 60000 }, async () => {
+  const fs = await import('node:fs');
+  const { chromium } = await import('playwright-core');
+  const { startServer } = await import('../src/server.js');
+  const { tempDir, writeFiles } = await import('./helpers.js');
+  const dir = tempDir();
+  writeFiles(dir, {
+    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="app.css"></head><body><p id="t">hola</p></body></html>',
+    'app.css': '#t { color: rgb(255, 0, 0); }',
+  });
+  const srv = await startServer({ dir, port: 0, liveReload: true });
+  const browser = await chromium.launch({ executablePath: findBrowser(), headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.goto(srv.url);
+    await page.waitForFunction(() => getComputedStyle(document.getElementById('t')).color === 'rgb(255, 0, 0)');
+    await page.evaluate(() => {
+      window.estado = 42; // se perdería con una recarga completa
+    });
+    // Espera a que el EventSource esté conectado antes de enviar el aviso.
+    await page.waitForTimeout(300);
+    fs.writeFileSync(path.join(dir, 'app.css'), '#t { color: rgb(0, 128, 0); }');
+    srv.reloadCss();
+    await page.waitForFunction(() => getComputedStyle(document.getElementById('t')).color === 'rgb(0, 128, 0)', null, { timeout: 5000 });
+    assert.equal(await page.evaluate(() => window.estado), 42, 'la página no se recargó');
+    assert.equal(await page.evaluate(() => document.querySelectorAll('link[rel=stylesheet]').length), 1, 'no quedan hojas duplicadas');
+  } finally {
+    await browser.close();
+    await srv.close();
+  }
+});
