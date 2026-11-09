@@ -15,6 +15,7 @@ First public release.
 - JS/CSS bundling and minification with esbuild, optional terser pass, safe merging of classic scripts.
 - Optional obfuscation (`low`, `medium`, `high`, `max`) with javascript-obfuscator; third-party libraries are detected and left untouched unless requested.
 - Content hashing, source maps, SRI recomputation, gzip/brotli precompression, `--json` output for CI.
+- Projects opened through a symlink or junction (e.g. macOS `/tmp`) now build; the root is resolved to its real path.
 - MIT license, CI on Node 16–24 (Linux, Windows, macOS) and browser equivalence tests in Chrome.
 
 [0.1.0]: https://github.com/MarioACo/vanilla-builder/releases/tag/v0.1.0

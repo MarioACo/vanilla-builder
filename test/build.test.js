@@ -26,6 +26,21 @@ test('no borra una carpeta de salida que no creó Builder', async () => {
   assert.ok(exists(dir, 'dist/.builder-manifest.json'));
 });
 
+test('compila un proyecto abierto a través de un enlace simbólico (macOS /tmp, junctions)', async () => {
+  const real = tempDir();
+  writeFiles(real, {
+    'site/index.html': page('<script type="module" src="js/main.js"></script><script type="module" src="js/admin.js"></script>'),
+    'site/js/main.js': "import { n } from './shared.js';\nconsole.log('main', n);\n",
+    'site/js/admin.js': "import { n } from './shared.js';\nconsole.log('admin', n);\n",
+    'site/js/shared.js': 'export const n = 1;\n',
+  });
+  const via = path.join(tempDir(), 'via');
+  fs.symlinkSync(real, via, 'junction');
+  await buildDir(path.join(via, 'site'));
+  assert.ok(exists(real, 'site/dist/js/main.js'));
+  assert.ok(exists(real, 'site/dist/js/admin.js'));
+});
+
 test('rechaza outDir peligrosos', async () => {
   const dir = tempDir();
   writeFiles(dir, { 'index.html': page('x') });

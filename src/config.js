@@ -166,9 +166,12 @@ export async function loadConfig({ dir = '.', config, overrides = {}, cwd = proc
   if (errors.length) throw new BuildError('La configuración tiene errores:', errors);
   const baseDir = configFile ? path.dirname(configFile) : projectDir;
   cfg.root = path.resolve(baseDir, cfg.root);
+  if (!fs.existsSync(cfg.root)) throw new BuildError(`"root" no existe: ${cfg.root}`);
+  // esbuild resuelve los enlaces simbólicos de lo que importa; si la raíz no es la ruta real, el mismo
+  // módulo aparece con dos rutas (pasa en macOS con /tmp → /private/tmp, o al abrir el proyecto por un enlace).
+  cfg.root = fs.realpathSync(cfg.root);
   cfg.outDir = path.resolve(cfg.root, cfg.outDir);
   cfg.configFile = configFile;
-  if (!fs.existsSync(cfg.root)) throw new BuildError(`"root" no existe: ${cfg.root}`);
   return cfg;
 }
 
