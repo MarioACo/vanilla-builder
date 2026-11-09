@@ -6,6 +6,7 @@ import { BuildError } from './util.js';
 import { L } from './i18n.js';
 import { resolveBrowsers } from './browsers.js';
 import { validateBudgets } from './budgets.js';
+import { validatePlugins, loadPlugins } from './plugins.js';
 
 export const CONFIG_FILES = ['builder.config.json', 'builder.config.mjs', 'builder.config.js'];
 
@@ -52,6 +53,8 @@ export const DEFAULTS = {
   images: false,
   // Presupuestos de tamaño por patrón de salida (o "total"): { "js/**/*.js": "50 KB", "total": "1 MB gzip" }.
   budgets: false,
+  // Plugins: objetos con ganchos (builder.config.mjs) o nombres de paquete. Ver src/plugins.js.
+  plugins: [],
 };
 
 const NESTED = ['html', 'css', 'js', 'json', 'dependencies'];
@@ -170,6 +173,7 @@ export function normalizeConfig(raw, errors = []) {
   ))
     errors.push(L('"images" debe ser true, false o { "quality": 1-100 }.', '"images" must be true, false or { "quality": 1-100 }.'));
   errors.push(...validateBudgets(cfg.budgets));
+  errors.push(...validatePlugins(cfg.plugins));
   if (typeof cfg.cache !== 'boolean') errors.push(L('"cache" debe ser true o false.', '"cache" must be true or false.'));
   if (!(cfg.workers === 'auto' || (Number.isInteger(cfg.workers) && cfg.workers >= 0 && cfg.workers <= 64)))
     errors.push(L('"workers" debe ser "auto" o un número entre 0 y 64.', '"workers" must be "auto" or a number between 0 and 64.'));
@@ -251,6 +255,7 @@ export async function loadConfig({ dir = '.', config, overrides = {}, cwd = proc
   cfg.outDir = path.resolve(cfg.root, cfg.outDir);
   cfg.configFile = configFile;
   // Navegadores objetivo (browserslist): solo cambian los targets que siguen con su valor por defecto.
+  cfg.plugins = await loadPlugins(cfg.plugins, cfg.root);
   cfg.browserTargets = await resolveBrowsers(cfg.root, cfg.browsers);
   const targets = cfg.browserTargets?.targets;
   if (targets?.length) {

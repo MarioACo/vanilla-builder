@@ -25,6 +25,7 @@ import { verifyOutput } from './verify.js';
 import { rewriteTsImports } from './jsimports.js';
 import { IMAGE_EXT, ensureSharp, imageOptions, optimizeImage } from './images.js';
 import { checkBudgets } from './budgets.js';
+import { TRANSFORM_EXT, runHook, runTransform } from './plugins.js';
 import { buildReport } from './report.js';
 import {
   BuildError,
@@ -97,6 +98,7 @@ class Context {
     this.depCache = new Map();
     this.depMarks = new Map();
     this.tsCode = new Map();
+    this.sourceOverrides = new Map();
     this.pkgNames = null;
     this.vendorPackages = [];
     this.chunkDir = cfg.js.chunkDir.replace(/\/+$/, '');
@@ -132,8 +134,10 @@ class Context {
   }
 
   readText(rel, { kind = 'text', charset } = {}) {
-    // TypeScript: como JS se lee la versión ya transpilada (sin tipos).
+    // TypeScript: como JS se lee la versión ya transpilada (sin tipos; ya incluye los cambios de los plugins).
     if (kind === 'js' && this.tsCode.has(rel)) return { text: this.tsCode.get(rel), bom: false, encoding: 'utf8' };
+    // Código fuente cambiado por un plugin (transform): es el que se procesa a partir de aquí.
+    if (this.sourceOverrides.has(rel)) return { ...this.sourceOverrides.get(rel), encoding: 'utf8' };
     const key = `${rel}\0${kind}`;
     if (this.textCache.has(key)) return this.textCache.get(key);
     const buf = fs.readFileSync(this.abs(rel));
@@ -385,6 +389,8 @@ class Context {
 
   emitCopy(outRel, rel, action = 'copy') {
     const f = this.files.get(rel);
+    const override = this.sourceOverrides.get(rel);
+    if (override) return this.emit(outRel, (override.bom ? BOM : '') + override.text, { type: typeOfExt(f.ext), action, sources: [rel] });
     const prev = this.outputs.get(outRel);
     if (prev) {
       if (prev.sources?.includes(rel)) return outRel;
@@ -476,6 +482,20 @@ function loadPages(ctx) {
 }
 
 /** Decide qué páginas se procesan completas (entradas + enlazadas) y cuáles en modo conservador. */
+/** Pasa el código fuente por los plugins con transform (en paralelo entre archivos, en orden entre plugins). */
+async function applyTransforms(ctx) {
+  const plugins = ctx.cfg.plugins.filter((p) => typeof p.transform === 'function');
+  if (!plugins.length) return;
+  const list = [...ctx.files.keys()].filter((rel) => TRANSFORM_EXT.has(extOf(rel)));
+  await mapLimit(list, 16, async (rel) => {
+    const text = decodeUtf8(fs.readFileSync(ctx.abs(rel)));
+    if (text == null) return; // otras codificaciones: se respetan los bytes originales
+    const src = stripBom(text);
+    const out = await runTransform(plugins, rel, src.text);
+    if (out !== src.text) ctx.sourceOverrides.set(rel, { text: out, bom: src.bom });
+  });
+}
+
 /**
  * Transpila cada archivo TypeScript a JavaScript (solo quita los tipos: no baja el nivel de sintaxis).
  * Usa el tsconfig.json del proyecto si existe. Lo que falle se avisa y sigue el camino normal
@@ -777,6 +797,8 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
 
   mark('pages');
   // 1. Páginas y entradas
+  await runHook(cfg.plugins, 'buildStart', { config: cfg, mode });
+  await applyTransforms(ctx);
   await transpileTypeScript(ctx);
   const pages = loadPages(ctx);
   markDependencies(ctx, pages);
@@ -1261,6 +1283,7 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
       files: [...ctx.outputs.keys()].sort(),
     });
     await swapIntoPlace(cfg, staging);
+    await runHook(cfg.plugins, 'buildEnd', { result, outDir: cfg.outDir });
     mark('fin');
   } catch (err) {
     if (staging && !opts.keepFailed) await discardStaging(staging);

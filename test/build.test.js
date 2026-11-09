@@ -708,6 +708,57 @@ test('presupuestos: un exceso detiene la compilación sin tocar dist/; analyze s
   assert.ok(a.warnings.some((w) => /"js\/nada\/\*\.js" no coincide/.test(w)));
 });
 
+test('plugins: transform sobre el fuente (con SRI coherente), buildStart/buildEnd y plugins como paquete', async () => {
+  const { createHash } = await import('node:crypto');
+  const dir = tempDir();
+  writeFiles(dir, {
+    'index.html': page('<h1>v__VERSION__</h1><script src="app.js" integrity="sha384-viejo"></script>', '<link rel="stylesheet" href="app.css">'),
+    'app.js': 'var version = "__VERSION__";\n',
+    'app.css': '.v::after { content: "__VERSION__"; }\n',
+    'notas.txt': '__VERSION__ (no se toca: filtro)',
+    'builder.config.mjs': `
+      export const calls = [];
+      export default {
+        plugins: [
+          {
+            name: 'version',
+            filter: /\\.(html|js|css)$/,
+            transform: ({ path, code }) => code.replaceAll('__VERSION__', '1.2.3'),
+            buildStart: ({ mode }) => { globalThis.__vbCalls = [...(globalThis.__vbCalls ?? []), 'start:' + mode]; },
+            buildEnd: ({ result }) => { globalThis.__vbCalls.push('end:' + result.outputs.size); },
+          },
+          ['vb-plugin-mayus', { sufijo: '!' }],
+        ],
+      };`,
+    'node_modules/vb-plugin-mayus/package.json': JSON.stringify({ name: 'vb-plugin-mayus', main: 'index.js' }),
+    'node_modules/vb-plugin-mayus/index.js':
+      'module.exports = (opts) => ({ name: "mayus", transform: ({ path, code }) => path.endsWith(".html") ? code.replace("<h1>", "<h1 data-x=\\"" + opts.sufijo + "\\">") : undefined });',
+  });
+  globalThis.__vbCalls = [];
+  await buildDir(dir);
+  const html = read(dir, 'dist/index.html');
+  assert.match(html, /v1\.2\.3/);
+  assert.match(html, /data-x=!/, 'plugin cargado como paquete, con opciones');
+  assert.match(read(dir, 'dist/app.js'), /1\.2\.3/);
+  assert.match(read(dir, 'dist/app.css'), /1\.2\.3/);
+  assert.match(read(dir, 'dist/notas.txt'), /__VERSION__/, 'el filtro deja fuera otros archivos');
+  const js = fs.readFileSync(path.join(dir, 'dist/app.js'));
+  const expected = `sha384-${createHash('sha384').update(js).digest('base64')}`;
+  assert.ok(html.includes(expected), 'SRI calculado sobre el código ya transformado');
+  assert.deepEqual(globalThis.__vbCalls.slice(0, 1), ['start:build']);
+  assert.match(globalThis.__vbCalls[1], /^end:\d+$/);
+
+  // Errores claros: un plugin que falla y un gancho desconocido.
+  const bad = tempDir();
+  writeFiles(bad, {
+    'index.html': page('x'),
+    'builder.config.mjs': 'export default { plugins: [{ name: "roto", transform: () => { throw new Error("ups"); } }] };',
+  });
+  await assert.rejects(buildDir(bad), /plugin "roto" falló en transform \(index\.html\): ups/);
+  writeFiles(bad, { 'builder.config.mjs': 'export default { plugins: [{ name: "raro", onLoad() {} }] };' });
+  await assert.rejects(buildDir(bad), (err) => err.details.some((d) => /no es un gancho conocido/.test(d)));
+});
+
 test('dependencias: un archivo con el nombre de un paquete de package.json', async () => {
   const dir = tempDir();
   writeFiles(dir, {
