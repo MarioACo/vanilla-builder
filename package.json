@@ -1,8 +1,7 @@
 {
   "name": "vanilla-builder",
   "version": "0.1.0",
-  "private": true,
-  "description": "Empaqueta, minifica y ofusca proyectos web vanilla (HTML, CSS y JS) sin perder nada: detecta dependencias, verifica la salida y nunca borra lo que no creó.",
+  "description": "Zero-config bundler, minifier and obfuscator for vanilla HTML, CSS and JavaScript sites. Detects every dependency, verifies the output and never loses a file.",
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -15,13 +14,17 @@
   "files": [
     "bin/",
     "src/",
-    "README.md"
+    "README.md",
+    "README.es.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "scripts": {
     "test": "node --test test/unit.test.js test/build.test.js",
     "test:browser": "node --test test/browser.test.js",
     "test:node16": "node test/unit.test.js && node test/build.test.js",
-    "check": "node --test test/unit.test.js test/build.test.js test/browser.test.js"
+    "check": "node --test test/unit.test.js test/build.test.js test/browser.test.js",
+    "prepublishOnly": "npm test"
   },
   "keywords": [
     "bundler",
@@ -36,7 +39,15 @@
     "esbuild"
   ],
   "author": "MarioACo",
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MarioACo/vanilla-builder.git"
+  },
+  "homepage": "https://github.com/MarioACo/vanilla-builder#readme",
+  "bugs": {
+    "url": "https://github.com/MarioACo/vanilla-builder/issues"
+  },
   "engines": {
     "node": ">=16"
   },

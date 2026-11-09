@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: [18, 20, 22, 24]
+        include:
+          - os: windows-latest
+            node: 22
+          - os: macos-latest
+            node: 22
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  node16:
+    # node --test no existe en Node 16: se ejecutan los archivos directamente.
+    name: Node 16
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 16
+      - run: node --version && npm run test:node16
+
+  browser:
+    # Compila los sitios de ejemplo (también con Node 16) y compara original y salida en Chrome.
+    name: Navegador
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 16
+      - run: echo "NODE16=$(which node)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:browser
+        env:
+          BUILDER_CHROMIUM: /usr/bin/google-chrome
+      - run: npm run test:browser
+        env:
+          BUILDER_CHROMIUM: /usr/bin/google-chrome
+          BUILDER_NODE: ${{ env.NODE16 }}
+          BUILDER_NODE_LABEL: Node 16

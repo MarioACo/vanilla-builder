@@ -1,108 +1,114 @@
-# Builder
+# vanilla-builder
 
-Empaqueta, minifica y ofusca proyectos web **vanilla** (HTML, CSS y JavaScript sin framework) **sin perder nada**.
-Detecta solo las dependencias de cada página, verifica la salida antes de publicarla y nunca borra lo que no creó.
+[![CI](https://github.com/MarioACo/vanilla-builder/actions/workflows/ci.yml/badge.svg)](https://github.com/MarioACo/vanilla-builder/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/vanilla-builder)](https://www.npmjs.com/package/vanilla-builder) [![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-- **Cero configuración**: apúntalo a una carpeta con `.html` y listo.
-- **Sin pérdida**: cada archivo del proyecto termina con un destino conocido (procesado, empaquetado, copiado u omitido a propósito) y la salida se verifica antes de reemplazar `dist/`.
-- **Ligero**: 57 KB propios; la instalación base son 8 paquetes (el grueso es el binario de esbuild). El ofuscador y terser se instalan solo si los usas.
-- **Node 16 o superior** (probado en 16, 18, 20, 22 y 24).
+**English** · [Español](README.es.md)
 
-## Instalación
+Bundle, minify and obfuscate **vanilla** web projects (HTML, CSS and JavaScript, no framework) **without losing anything**.
+It follows the real dependencies of every page, verifies the output before publishing it and never deletes what it did not create.
 
-```bash
-npm install --save-dev vanilla-builder          # o: npm link desde esta carpeta
-npm install --save-dev javascript-obfuscator    # solo si vas a ofuscar
-npm install --save-dev terser                   # solo si quieres la compresión máxima
-```
+- **Zero config**: point it at a folder with `.html` files and you are done.
+- **Lossless**: every project file ends up with a known fate (processed, bundled, copied or deliberately skipped), and the output is verified before it replaces `dist/`.
+- **Lightweight**: 57 KB of its own code; the base install is 8 packages (most of it is the esbuild binary). The obfuscator and terser are only installed if you use them.
+- **Node 16 or newer** (tested on 16, 18, 20, 22 and 24).
 
-> En Node 16 y 17, npm muestra un aviso `EBADENGINE` porque esbuild declara Node 18+. Es solo un aviso:
-> toda la batería de pruebas (incluidas las de navegador) pasa compilando con Node 16.
-
-## Uso
+## Install
 
 ```bash
-builder build mi-sitio                  # compila en mi-sitio/dist
-builder build mi-sitio --obfuscate      # además ofusca tu JavaScript (nivel medium)
-builder analyze mi-sitio                # muestra qué pasará con cada archivo, sin escribir nada
-builder init mi-sitio                   # crea builder.config.json con lo detectado
-builder dev mi-sitio                    # compila, vigila cambios y sirve dist/ con recarga automática
-builder serve mi-sitio                  # sirve dist/ para probarlo
+npm install --save-dev vanilla-builder
+npm install --save-dev javascript-obfuscator    # only if you obfuscate
+npm install --save-dev terser                   # only if you want maximum compression
 ```
 
-Opciones frecuentes de `build` (todas tienen equivalente en la configuración):
+> On Node 16 and 17 npm prints an `EBADENGINE` warning because esbuild declares Node 18+. It is only a warning:
+> the whole test suite (browser tests included) passes when building with Node 16.
 
-| Opción | Qué hace |
+## Usage
+
+```bash
+npx builder build my-site                  # builds into my-site/dist
+npx builder build my-site --obfuscate      # also obfuscates your JavaScript (medium level)
+npx builder analyze my-site                # shows what will happen to each file, writes nothing
+npx builder init my-site                   # creates builder.config.json from what it detected
+npx builder dev my-site                    # builds, watches and serves dist/ with live reload
+npx builder serve my-site                  # serves dist/ to try it out
+```
+
+Common `build` options (all of them have a config equivalent):
+
+| Option | What it does |
 | --- | --- |
-| `--obfuscate [low\|medium\|high\|max]` | Ofusca tu JS. Las librerías de terceros se detectan y no se tocan. |
-| `--dep <patrón>` / `--not-dep <patrón>` | Marca a mano una dependencia / corrige una detección. |
-| `--obfuscate-deps` | Ofusca también las dependencias. |
-| `--minifier terser` | Segunda pasada de compresión con terser (JS aún más pequeño). |
-| `--compress [gzip\|brotli]` | Genera además `.gz` y `.br` para servidores que sirven precomprimido. |
-| `--hash` | Nombres con hash en JS/CSS para caché a largo plazo. |
+| `--obfuscate [low\|medium\|high\|max]` | Obfuscates your JS. Third-party libraries are detected and left untouched. |
+| `--dep <pattern>` / `--not-dep <pattern>` | Manually mark a dependency / correct a detection. |
+| `--obfuscate-deps` | Obfuscate dependencies too. |
+| `--minifier terser` | Second compression pass with terser (even smaller JS). |
+| `--compress [gzip\|brotli]` | Also emits `.gz` and `.br` files for servers that serve precompressed assets. |
+| `--hash` | Hashed JS/CSS file names for long-term caching. |
 | `--sourcemap [linked\|hidden\|inline]` | Source maps. |
-| `--target es2018` | Transpila a un nivel concreto (por defecto: el del propio código). |
-| `--drop-console` | Quita `console.*` y `debugger`. |
-| `--entry`, `--include`, `--ignore` | Entradas explícitas, archivos forzados y excluidos (repetibles). |
-| `--json` | Resultado en JSON para CI (código de salida 1 si algo falla). |
+| `--target es2018` | Transpile to a specific level (default: whatever your own code already uses). |
+| `--drop-console` | Removes `console.*` and `debugger`. |
+| `--entry`, `--include`, `--ignore` | Explicit entries, forced files and exclusions (repeatable). |
+| `--json` | JSON output for CI (exit code 1 if anything fails). |
 
-## Qué detecta solo
+Run `npx builder help` for the full list.
 
-Partiendo de cada `.html`, Builder sigue:
+## What it detects on its own
 
-- `<script src>` clásicos y `type="module"`, scripts inline e **import maps**.
-- `<link rel="stylesheet">`, `@import` y `url()` del CSS (también `image-set()`), `<style>` y atributos `style`.
-- Imágenes, `srcset`, vídeo, audio, iconos, manifest, `og:image`, `<iframe>`, `<object>`, SVG `<use>`…
-- Enlaces a otras páginas, `import()` dinámicos, `new URL('./x', import.meta.url)`.
-- Workers, service workers e `importScripts()`.
-- Rutas escritas como texto en el JS (por ejemplo la lista de precache de un service worker): esos archivos se publican también en su ruta original.
+Starting from each `.html` file, it follows:
 
-Lo que no se puede seguir (un `fetch(variable)`, una plantilla del servidor…) **no se pierde**: la estructura de carpetas se conserva y todo lo no referenciado se publica igualmente (`unreferenced: "process"`).
+- Classic and `type="module"` `<script src>`, inline scripts and **import maps**.
+- `<link rel="stylesheet">`, CSS `@import` and `url()` (including `image-set()`), `<style>` and `style` attributes.
+- Images, `srcset`, video, audio, icons, manifest, `og:image`, `<iframe>`, `<object>`, SVG `<use>`…
+- Links to other pages, dynamic `import()`, `new URL('./x', import.meta.url)`.
+- Workers, service workers and `importScripts()`.
+- Paths written as strings in JS (for example a service worker precache list): those files are also published at their original path.
 
-## Garantías
+What cannot be followed (a `fetch(variable)`, a server template…) **is not lost**: the folder structure is preserved and everything unreferenced is still published (`unreferenced: "process"`).
 
-| Riesgo típico de un builder | Cómo lo evita Builder |
+## Guarantees
+
+| Typical bundler risk | How vanilla-builder avoids it |
 | --- | --- |
-| Unir scripts clásicos rompe variables globales | Solo une scripts consecutivos, con el mismo `defer`/modo estricto, sin `document.currentScript`, sin redeclarar `let/const` y con separador seguro (`;`). |
-| La minificación crea globales nuevas o renombra las tuyas | Compara las globales antes y después; si cambian, usa una minificación más conservadora o deja el original. |
-| El ofuscador rompe exportaciones o atributos `with { type }` | Verifica exportaciones, importaciones y atributos tras ofuscar; si no cuadran, no ofusca ese archivo. |
-| esbuild borra en silencio `with { type: 'css' }` | Se fuerza la conservación de los atributos de import. |
-| La minificación HTML cambia el texto | Minificador propio sobre parse5 y comprobación estructural (elementos, atributos y texto). `<pre>`, `<textarea>` y plantillas quedan intactos; si el CSS usa `white-space: pre`, no colapsa espacios. |
-| `integrity` (SRI) obsoleto bloquea scripts | Se recalcula al cambiar el contenido. |
-| Codificaciones antiguas o BOM | Se conservan los bytes (HTML) o se emite JS/CSS con escapes ASCII. |
-| JSON reformateado pierde precisión | Solo se quitan espacios fuera de las cadenas: `2.0` y números enormes quedan igual. |
-| Borrar `dist/` equivocado | Nunca vacía una carpeta que no creó (marca `.builder-manifest.json`), ni la del proyecto, ni la raíz. |
-| Compilación fallida a medias | Se escribe en una carpeta temporal, se verifica y solo entonces reemplaza `dist/`. |
-| Publicar secretos | `.env*`, claves `.pem/.key`, `node_modules`, `package.json` y configuración de herramientas quedan fuera por defecto. |
+| Concatenating classic scripts breaks globals | Only merges consecutive scripts with the same `defer`/strict mode, no `document.currentScript`, no `let/const` redeclarations, and a safe `;` separator. |
+| Minification creates new globals or renames yours | Compares globals before and after; if they differ it falls back to a more conservative minification or keeps the original. |
+| The obfuscator breaks exports or `with { type }` attributes | Checks exports, imports and attributes after obfuscating; if they do not match, that file is not obfuscated. |
+| esbuild silently drops `with { type: 'css' }` | Import attributes are forcibly preserved. |
+| HTML minification changes the text | Own minifier on top of parse5 plus a structural check (elements, attributes and text). `<pre>`, `<textarea>` and templates stay intact; if the CSS uses `white-space: pre`, whitespace is not collapsed. |
+| Stale `integrity` (SRI) blocks scripts | Recomputed whenever the content changes. |
+| Legacy encodings or BOM | Bytes are preserved (HTML) or JS/CSS is emitted with ASCII escapes. |
+| Reformatted JSON loses precision | Only whitespace outside strings is removed: `2.0` and huge numbers stay the same. |
+| Wiping the wrong `dist/` | Never empties a folder it did not create (marked with `.builder-manifest.json`), nor the project folder, nor the root. |
+| Half-finished build | Writes into a temp folder, verifies it, and only then replaces `dist/`. |
+| Publishing secrets | `.env*`, `.pem/.key` keys, `node_modules`, `package.json` and tool configs are excluded by default. |
 
-La batería de pruebas abre cada sitio de ejemplo **original y compilado en Chromium** y exige resultados idénticos, sin errores ni 404, con 5 variantes (por defecto, ofuscación alta + hash, ofuscación max, terser + precompresión, sin minificar).
+The test suite opens every example site **original and built in Chromium** and requires identical results, with no errors and no 404s, across 5 variants (default, high obfuscation + hash, max obfuscation, terser + precompression, unminified).
 
-## Dependencias de terceros y ofuscación
+## Third-party dependencies and obfuscation
 
-Ofuscar jQuery, Bootstrap o un paquete de npm no protege nada tuyo, los hace más lentos y puede incumplir su licencia. Por eso, al ofuscar:
+Obfuscating jQuery, Bootstrap or an npm package protects nothing of yours, makes them slower and may violate their license. So when obfuscating:
 
-- Se detectan como dependencia los archivos en `vendor/`, `node_modules/`, `third-party/`…, los nombres de librerías conocidas (`jquery-3.7.1.min.js`, `bootstrap.bundle.js`…), los `.min.js`/`.umd.js`, el código ya minificado y las cabeceras de licencia con versión (`/*! Foo v1.2.0 */`).
-- Los paquetes de npm que importa tu código de módulos se separan en `assets/vendor/` (sin ofuscar y con su estado compartido intacto).
-- `builder analyze` lista qué detectó y por qué.
+- Files in `vendor/`, `node_modules/`, `third-party/`…, well-known library names (`jquery-3.7.1.min.js`, `bootstrap.bundle.js`…), `.min.js`/`.umd.js` files, already-minified code and license headers with a version (`/*! Foo v1.2.0 */`) are detected as dependencies.
+- npm packages imported by your module code are split into `assets/vendor/` (not obfuscated, with their shared state intact).
+- `builder analyze` lists what it detected and why.
 
-Para corregirlo a mano:
+To correct it by hand:
 
 ```json
 {
   "obfuscate": "high",
   "dependencies": {
-    "include": ["js/mi-libreria.js"],
+    "include": ["js/my-library.js"],
     "exclude": ["js/app.min.js"],
     "obfuscate": false
   }
 }
 ```
 
-`include` marca dependencias que no se detectaron; `exclude` indica que un archivo es tuyo y sí debe ofuscarse; `obfuscate: true` ofusca todo.
+`include` marks dependencies that were not detected; `exclude` says a file is yours and should be obfuscated; `obfuscate: true` obfuscates everything.
 
-Niveles: `low` (casi sin coste), `medium` (recomendado), `high` y `max` (además se defiende de ser formateado o modificado; más pesado y lento). Las opciones que cambian el comportamiento (`debugProtection`, `disableConsoleOutput`, `renameGlobals`) nunca se activan solas; puedes pasarlas con un objeto: `"obfuscate": { "preset": "high", "debugProtection": true }`. Tus comentarios de licencia (`/*! … */`, `@license`) se conservan.
+Levels: `low` (almost free), `medium` (recommended), `high` and `max` (also defends against being reformatted or tampered with; heavier and slower). Options that change behavior (`debugProtection`, `disableConsoleOutput`, `renameGlobals`) are never turned on automatically; pass them with an object: `"obfuscate": { "preset": "high", "debugProtection": true }`. Your license comments (`/*! … */`, `@license`) are kept.
 
-## Configuración (`builder.config.json`)
+## Configuration (`builder.config.json`)
 
 ```json
 {
@@ -124,31 +130,35 @@ Niveles: `low` (casi sin coste), `medium` (recomendado), `high` y `max` (además
 }
 ```
 
-- `entries`: `"auto"` toma todos los HTML completos; también admite una lista de `.html`, `.js` o `.css`.
-- `unreferenced`: qué hacer con lo que nada referencia: `process` (minificar y publicar), `copy` o `skip`.
-- `js.target: "auto"` usa el nivel de sintaxis de tu propio código: no transpila ni introduce sintaxis más nueva que la que ya usas.
-- También se acepta `builder.config.mjs` (exporta un objeto o una función). Las opciones mal escritas dan error con sugerencia.
+- `entries`: `"auto"` takes every complete HTML file; it also accepts a list of `.html`, `.js` or `.css` files.
+- `unreferenced`: what to do with files nothing references: `process` (minify and publish), `copy` or `skip`.
+- `js.target: "auto"` uses the syntax level of your own code: it neither transpiles nor introduces newer syntax than you already use.
+- `builder.config.mjs` is also accepted (export an object or a function). Misspelled options raise an error with a suggestion.
 
 ## API
 
 ```js
 import { build, analyze } from 'vanilla-builder';
 
-const result = await build({ dir: 'mi-sitio', overrides: { obfuscate: 'high' } });
+const result = await build({ dir: 'my-site', overrides: { obfuscate: 'high' } });
 console.log(result.report.totals, result.warnings);
 ```
 
-## Desarrollo
+## Development
 
 ```bash
-npm test               # unitarias + integración (Node 18+; en Node 16: npm run test:node16)
-npm run test:browser   # equivalencia real en Chromium (busca Chrome/Edge o usa BUILDER_CHROMIUM)
-BUILDER_NODE=/ruta/node16 npm run test:browser   # compila con otro Node y verifica en el navegador
+npm test               # unit + integration (Node 18+; on Node 16: npm run test:node16)
+npm run test:browser   # real equivalence in Chromium (finds Chrome/Edge or uses BUILDER_CHROMIUM)
+BUILDER_NODE=/path/to/node16 npm run test:browser   # build with another Node and verify in the browser
 ```
 
-## Límites conocidos
+## Known limits
 
-- Ningún ofuscador hace el código imposible de leer: solo lo encarece mucho.
-- Con `hash: true`, los JS/CSS cambian de nombre; si tu código los pide por texto, Builder publica también la ruta original y lo avisa.
-- Colapsar espacios en HTML cambia `textContent` (no lo que se ve). Para conservarlo byte a byte: `"html": { "collapseWhitespace": false }`.
-- `import()` con rutas calculadas sin prefijo fijo hace que ese grupo de módulos se minifique archivo por archivo en su sitio (sin empaquetar), para no romper rutas.
+- No obfuscator makes code impossible to read: it only makes it much more expensive.
+- With `hash: true`, JS/CSS files are renamed; if your code requests them by string, the original path is also published and you get a warning.
+- Collapsing HTML whitespace changes `textContent` (not what you see). To keep it byte for byte: `"html": { "collapseWhitespace": false }`.
+- `import()` with computed paths and no fixed prefix makes that group of modules minify file by file in place (without bundling), so paths do not break.
+
+## License
+
+[MIT](LICENSE) © MarioACo
