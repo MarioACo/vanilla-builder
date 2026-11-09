@@ -33,9 +33,16 @@ export const DEFAULT_IGNORE = [
   '**/eslint.config.*',
   '**/prettier.config.*',
   'tsconfig.json',
+  'tsconfig.*.json',
   'jsconfig.json',
+  // Declaraciones de tipos: no contienen código ejecutable.
+  '**/*.d.ts',
+  '**/*.d.mts',
+  '**/*.d.cts',
   '**/*.test.js',
   '**/*.spec.js',
+  '**/*.test.ts',
+  '**/*.spec.ts',
   '**/__tests__/**',
   '**/*.map',
 ];

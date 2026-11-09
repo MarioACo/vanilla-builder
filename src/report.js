@@ -1,35 +1,30 @@
 // Informe de tamaños (original, final, gzip y brotli) por archivo y totales.
-import zlib from 'node:zlib';
 import { formatBytes } from './util.js';
+import { gzipOf, brotliOf, mapLimit } from './compress.js';
 
 const COMPRESSIBLE = new Set(['html', 'css', 'js', 'json', 'svg', 'text']);
 
-export function sizesOf(buf, type) {
+export async function sizesOf(buf, type) {
   const size = buf.length;
   if (!COMPRESSIBLE.has(type) || size === 0) return { size, gzip: null, brotli: null };
-  return {
-    size,
-    gzip: zlib.gzipSync(buf, { level: 9 }).length,
-    brotli: zlib.brotliCompressSync(buf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11 } }).length,
-  };
+  const [gz, br] = await Promise.all([gzipOf(buf), brotliOf(buf)]);
+  return { size, gzip: gz.length, brotli: br.length };
 }
 
 /** Filas del informe a partir de las salidas. */
-export function buildReport(outputs) {
-  const rows = [];
+export async function buildReport(outputs, heavy = null) {
   let compressed = 0;
+  const items = [];
   for (const [rel, o] of outputs) {
-    if (o.type === 'compressed') {
-      compressed++;
-      continue;
-    }
-    if (o.copyFrom) {
-      rows.push({ file: rel, type: o.type, action: o.action, sources: o.sources, before: o.size, size: o.size, gzip: null, brotli: null });
-      continue;
-    }
-    const s = sizesOf(o.data, o.type);
-    rows.push({ file: rel, type: o.type, action: o.action, sources: o.sources, before: o.before ?? s.size, ...s });
+    if (o.type === 'compressed') compressed++;
+    else items.push([rel, o]);
   }
+  const rows = await mapLimit(items, 64, async ([rel, o]) => {
+    if (o.copyFrom) return { file: rel, type: o.type, action: o.action, sources: o.sources, before: o.size, size: o.size, gzip: null, brotli: null };
+    const cached = heavy && COMPRESSIBLE.has(o.type) && o.data.length;
+    const s = cached ? await heavy.memo('sizes', o.data, () => sizesOf(o.data, o.type)) : await sizesOf(o.data, o.type);
+    return { file: rel, type: o.type, action: o.action, sources: o.sources, before: o.before ?? s.size, ...s };
+  });
   rows.sort((a, b) => (a.type === b.type ? a.file.localeCompare(b.file) : order(a.type) - order(b.type)));
   const totals = { before: 0, size: 0, gzip: 0, brotli: 0, files: rows.length };
   const byType = {};

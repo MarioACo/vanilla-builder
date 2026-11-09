@@ -4,11 +4,10 @@ import fs from 'node:fs';
 import * as esbuild from 'esbuild';
 import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
-import { analyzeJs, compareGlobals, moduleShape } from './jsinfo.js';
-import { obfuscateSafe } from './obfuscate.js';
+import { analyzeJs, compareGlobals } from './jsinfo.js';
 import { importOptional } from './optional.js';
 import { replaceWithMap } from './sourcemap.js';
-import { relFrom, toPosix, BuildError, rootPrefix, hasOwn, shortHash } from './util.js';
+import { relFrom, toPosix, BuildError, rootPrefix, hasOwn, shortHash, jsOutPath } from './util.js';
 import { classifyUrl } from './urls.js';
 import { formatMessage, esbuildErrorText } from './css.js';
 
@@ -93,7 +92,7 @@ export async function processClassic(ctx, { code, id, info, obfuscate, sourcemap
     if (!done) notes.push('se deja sin minificar para no romperlo');
   }
   if (obfuscate) {
-    const o = obfuscateSafe(out, { isModule: false, options: ctx.obfuscatorOptions, id, globals: info.top });
+    const o = await ctx.heavy.obfuscate(out, { isModule: false, options: ctx.obfuscatorOptions, id, globals: info.top });
     if (o.code) {
       out = o.code;
       map = null;
@@ -138,7 +137,7 @@ export async function processModuleStandalone(ctx, { code, id, info, obfuscate, 
     }
   }
   if (obfuscate) {
-    const o = obfuscateSafe(out, { isModule: true, options: ctx.obfuscatorOptions, id });
+    const o = await ctx.heavy.obfuscate(out, { isModule: true, options: ctx.obfuscatorOptions, id });
     if (o.code) {
       out = o.code;
       map = null;
@@ -154,8 +153,8 @@ export async function processModuleStandalone(ctx, { code, id, info, obfuscate, 
 }
 
 /** Ofusca un módulo ya generado (paquete, chunk o worker). */
-export function obfuscateModule(ctx, code, id) {
-  const o = obfuscateSafe(code, { isModule: true, options: ctx.obfuscatorOptions, id });
+export async function obfuscateModule(ctx, code, id) {
+  const o = await ctx.heavy.obfuscate(code, { isModule: true, options: ctx.obfuscatorOptions, id });
   return o.code ? { code: o.code } : { code, note: `no se ofuscó: ${o.reason}` };
 }
 
@@ -195,6 +194,14 @@ export function mapSpecifier(ctx, importMap, spec, importerDir) {
 }
 
 const EXTERNAL_SPEC = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
+
+function isFile(abs) {
+  try {
+    return fs.statSync(abs).isFile();
+  } catch {
+    return false;
+  }
+}
 
 function modulePlugin(ctx, group, state) {
   const isDepPath = (abs) => {
@@ -245,6 +252,11 @@ function modulePlugin(ctx, group, state) {
         if (!state.vendor || a.pluginData?.vbInner || r?.external || r?.errors) return r;
         if (a.namespace !== 'vb-inline' && isDepPath(a.importer)) return r;
         let abs = r?.path;
+        // Ruta relativa a un archivo que existe: se resuelve aquí, sin otro viaje de ida y vuelta a esbuild.
+        if (!abs && /^\.\.?\//.test(a.path) && a.namespace !== 'vb-inline' && a.resolveDir) {
+          const direct = path.resolve(a.resolveDir, a.path);
+          if (path.extname(direct) && isFile(direct)) abs = direct;
+        }
         if (!abs) {
           const res = await b.resolve(a.path, {
             kind: a.kind,
@@ -290,9 +302,12 @@ function modulePlugin(ctx, group, state) {
         }
         return undefined;
       };
-      b.onLoad({ filter: /\.(?:m?js|cjs)$/i }, (a) => {
+      b.onLoad({ filter: /\.(?:m?js|cjs|m?ts|cts)$/i }, (a) => {
         const rel = relFrom(ctx.root, a.path);
         const local = rel != null && !/(^|\/)node_modules\//.test(rel) && ctx.files.has(rel);
+        // Los .ts propios llegan ya transpilados (readText); los de node_modules los transpila esbuild.
+        const isTs = /\.(?:m?ts|cts)$/i.test(a.path);
+        if (!local && isTs) return { contents: fs.readFileSync(a.path, 'utf8'), loader: 'ts' };
         const code = local ? ctx.readText(rel, { kind: 'js' }).text : fs.readFileSync(a.path, 'utf8');
         if (local) state.consumed.add(rel);
         return { contents: prepare(code, local ? rel : toPosix(a.path), local ? path.posix.dirname(rel) : '', local), loader: 'js' };
@@ -319,30 +334,7 @@ export async function ensureTerser(projectRoot) {
 export async function terserPass(ctx, code, { isModule, level, globals }) {
   const js = ctx.cfg.js;
   if (!terser || js.minifier !== 'terser' || !js.minify || ctx.cfg.sourcemap) return code;
-  const ecma = Math.min(2020, Math.max(5, level ?? 2020));
-  let out;
-  try {
-    const r = await terser.minify(code, {
-      module: isModule,
-      toplevel: isModule,
-      ecma,
-      compress: { passes: 3, ecma, module: isModule, toplevel: isModule },
-      mangle: { toplevel: isModule },
-      keep_fnames: js.keepNames,
-      keep_classnames: js.keepNames,
-      format: { comments: /^!|@license|@preserve/i, ascii_only: true, ecma },
-    });
-    out = r.code;
-  } catch {
-    return code;
-  }
-  if (!out || out.length >= code.trimEnd().length) return code;
-  if (isModule) {
-    const a = moduleShape(code);
-    const b = moduleShape(out);
-    if (!a || !b || a.exports !== b.exports || a.imports !== b.imports) return code;
-  } else if (!globals || !compareGlobals(globals, out).ok) return code;
-  return out;
+  return ctx.heavy.terser(code, { isModule, level, globals: isModule ? undefined : globals, keepNames: js.keepNames });
 }
 
 /** Bytes de origen que aportaron código a una salida (incluye paquetes de node_modules). */
@@ -552,7 +544,7 @@ export async function buildModuleGroup(ctx, group) {
 export async function buildModuleWorker(ctx, rel) {
   const group = { importMap: null, virtual: new Map(), entries: new Set([rel]) };
   const state = newState('scan');
-  const outfile = path.join(ctx.root, '__vb_out__', rel);
+  const outfile = path.join(ctx.root, '__vb_out__', jsOutPath(rel));
   const run = (st, extra) =>
     esbuild.build({
       absWorkingDir: ctx.root,
@@ -584,7 +576,7 @@ export async function buildModuleWorker(ctx, rel) {
       if (f.path.endsWith('.map')) map = f.text;
       else code = f.text.replace(/\n\/\/# sourceMappingURL=.*\n?$/, '\n');
     }
-    ({ code, map } = finalizeMarkers(code, map, rel));
+    ({ code, map } = finalizeMarkers(code, map, jsOutPath(rel)));
     return { code, map, consumed: emit.consumed };
   } catch (err) {
     return { error: esbuildErrorText(err, ctx.root) };

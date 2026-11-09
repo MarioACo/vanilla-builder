@@ -8,7 +8,8 @@ import { runPipeline, VERSION } from '../src/builder.js';
 import { renderReport } from '../src/report.js';
 import { startServer } from '../src/server.js';
 import { watchTree } from '../src/watch.js';
-import { BuildError, formatBytes, relFrom, isInside } from '../src/util.js';
+import { BuildError, formatBytes, relFrom, isInside, JS_EXT, extOf, toPosix } from '../src/util.js';
+import { globMatcher } from '../src/files.js';
 
 const tty = process.stdout.isTTY && !process.env.NO_COLOR;
 const color = (code) => (text) => (tty ? `\x1b[${code}m${text}\x1b[0m` : String(text));
@@ -20,8 +21,15 @@ Uso:
   builder build   [carpeta] [opciones]   Compila el proyecto en dist/ (por defecto)
   builder analyze [carpeta] [--json]     Muestra dependencias detectadas y la salida prevista, sin escribir
   builder init    [carpeta] [--force]    Crea builder.config.json con lo detectado
+  builder deps    [carpeta]              Lista qué JS son librerías de terceros (no se ofuscan) y cuáles son tuyos
+  builder deps add|own|reset <patrón…>   Marca librerías (add), tu código (own) o vuelve a lo automático (reset)
   builder dev     [carpeta] [--port N]   Compila, vigila cambios y sirve dist/ con recarga automática
   builder serve   [carpeta] [--port N]   Sirve la carpeta de salida para probarla
+
+Marcar dependencias sin configuración:
+  En el HTML:        <script src="js/lib.js" data-builder="dependency"></script>   (o "own")
+  En el archivo:     /* @builder-dependency */  al principio                       (o @builder-own)
+  Con deps:          builder deps add "js/libs/**"   (en otra carpeta: --dir <carpeta>)
 
 Opciones de build:
   --out <carpeta>          Carpeta de salida (por defecto dist)
@@ -44,6 +52,8 @@ Opciones de build:
   --no-merge               No une scripts clásicos consecutivos
   --unreferenced <modo>    Archivos no referenciados: process | copy | skip (por defecto process)
   --base <ruta>            Ruta base del sitio para URLs absolutas (por defecto /)
+  --workers <n|auto>       Hilos para ofuscar/comprimir en paralelo (0 = sin hilos; por defecto auto)
+  --no-cache               No usa la caché de compilaciones anteriores
   --no-verify              Omite la verificación final (no recomendado)
   --force                  Permite vaciar una carpeta de salida que no creó Builder
   --keep-failed            Conserva la carpeta temporal si la verificación falla
@@ -68,6 +78,8 @@ function parseArgs(argv) {
     'dep',
     'not-dep',
     'minifier',
+    'workers',
+    'dir',
   ]);
   const optionalValue = { obfuscate: ['low', 'medium', 'high', 'max'], sourcemap: ['linked', 'hidden', 'inline'], compress: ['gzip', 'brotli'] };
   for (let i = 0; i < argv.length; i++) {
@@ -104,6 +116,12 @@ function overridesFrom(args) {
   if (args.base) o.base = args.base;
   if (args.verify === false) o.verify = false;
   if (args.compress !== undefined) o.compress = args.compress;
+  if (args.cache === false) o.cache = false;
+  if (args.workers !== undefined) {
+    const n = Number(args.workers);
+    if (args.workers !== 'auto' && !(Number.isInteger(n) && n >= 0)) throw new BuildError('--workers debe ser "auto" o un número (0 = sin hilos).');
+    o.workers = args.workers === 'auto' ? 'auto' : n;
+  }
   const deps = {};
   if (args.dep.length) deps.include = args.dep;
   if (args['not-dep'].length) deps.exclude = args['not-dep'];
@@ -151,6 +169,7 @@ function jsonResult(result) {
     warnings: result.warnings,
     notes: result.notes,
     verify: result.verify && { errors: result.verify.errors, stats: result.verify.stats },
+    perf: result.perf,
   };
 }
 
@@ -167,6 +186,18 @@ function printSummary(result, args) {
   }
   console.log(`${C.green('✔')} Cobertura: ${result.coverage.size}/${result.coverage.size} archivos de origen con destino conocido`);
   if (r.compressed) console.log(`${C.green('✔')} ${r.compressed} archivos precomprimidos (.gz/.br)`);
+  const p = result.perf;
+  if (p?.tasks) {
+    const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+    const where = p.threads ? `en el hilo principal y ${plural(p.threads, 'hilo', 'hilos')} más` : 'en el hilo principal';
+    const all = p.cacheHits === p.tasks;
+    const detail = all
+      ? p.tasks === 1
+        ? 'reutilizado de la caché'
+        : 'todos reutilizados de la caché'
+      : `${where}${p.cacheHits ? `, ${p.cacheHits} de la caché` : ''}`;
+    console.log(`${C.green('✔')} Ofuscación/terser: ${plural(p.tasks, 'archivo', 'archivos')}, ${detail}`);
+  }
   if (result.obfuscated) {
     const deps = [
       ...result.dependencies.map((d) => `${d.rel} — ${d.reason}`),
@@ -272,6 +303,79 @@ async function cmdInit(dir, args) {
   console.log(C.gray('  En "dependencies.include" marcas a mano librerías; en "dependencies.exclude" corriges una detección.'));
 }
 
+/** builder deps [carpeta] — lista; builder deps add|own|reset <patrón…> — edita builder.config.json. */
+async function cmdDeps(_dir, args) {
+  const sub = args._[1];
+  if (['add', 'own', 'reset'].includes(sub)) return editDeps(sub, args._.slice(2), args);
+  const dir = args.dir ?? sub ?? '.';
+  const cfg = await loadConfig({ dir, config: args.config, overrides: overridesFrom(args) });
+  const result = await runPipeline(cfg, { mode: 'analyze' });
+  const deps = new Map(result.dependencies.map((d) => [d.rel, d.reason]));
+  const own = [...result.coverage.keys()].filter((rel) => JS_EXT.has(extOf(rel)) && !deps.has(rel)).sort();
+  if (args.json) {
+    console.log(JSON.stringify({ dependencies: result.dependencies, own }, null, 2));
+    return;
+  }
+  console.log(`${C.bold(`Builder ${VERSION} — dependencias`)}  ${cfg.root}`);
+  printList(
+    'Librerías de terceros (no se ofuscan)',
+    [...deps].map(([rel, why]) => `${rel} ${C.gray(`— ${why}`)}`),
+    C.cyan,
+    200,
+  );
+  printList('Tu código (se ofusca con --obfuscate)', own, C.green, 200);
+  if (!deps.size && !own.length) console.log('\nNo hay archivos JavaScript en el proyecto.');
+  console.log(C.gray('\n¿Algo mal clasificado?'));
+  console.log(C.gray('  builder deps add <patrón>     es una librería: no se ofusca'));
+  console.log(C.gray('  builder deps own <patrón>     es tu código: sí se ofusca'));
+  console.log(C.gray('  builder deps reset <patrón>   vuelve a la detección automática'));
+  console.log(C.gray('  También: data-builder="dependency" en el <script>, o /* @builder-dependency */ al inicio del archivo.'));
+}
+
+async function editDeps(sub, rawPatterns, args) {
+  if (!rawPatterns.length) throw new BuildError(`Indica uno o más archivos o patrones: builder deps ${sub} "js/vendor/**"`);
+  const projectDir = path.resolve(args.dir ?? '.');
+  const file = args.config ? path.resolve(args.config) : (findConfigFile(projectDir) ?? path.join(projectDir, 'builder.config.json'));
+  if (!file.endsWith('.json'))
+    throw new BuildError(`La configuración está en ${path.basename(file)} (JavaScript); añade los patrones a mano en "dependencies".`);
+  const config = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')) : {};
+  if (config.dependencies === false || config.dependencies === true || config.dependencies == null) config.dependencies = {};
+  const d = config.dependencies;
+  const include = new Set(d.include ?? []);
+  const exclude = new Set(d.exclude ?? []);
+  const patterns = rawPatterns.map((p) => toPosix(p).replace(/^\.\//, ''));
+  for (const p of patterns) {
+    if (sub === 'add') {
+      include.add(p);
+      exclude.delete(p);
+    } else if (sub === 'own') {
+      exclude.add(p);
+      include.delete(p);
+    } else {
+      include.delete(p);
+      exclude.delete(p);
+    }
+  }
+  d.include = [...include];
+  d.exclude = [...exclude];
+  // Se valida antes de escribir: nunca deja un builder.config.json roto.
+  const cfg = await loadConfig({ dir: projectDir, config: args.config, overrides: { dependencies: { include: d.include, exclude: d.exclude } } });
+  const existed = fs.existsSync(file);
+  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+  const result = await runPipeline(cfg, { mode: 'analyze' });
+  const deps = new Map(result.dependencies.map((x) => [x.rel, x.reason]));
+  const jsFiles = [...result.coverage.keys()].filter((rel) => JS_EXT.has(extOf(rel)));
+  console.log(`${C.green('✔')} ${existed ? 'Actualizado' : 'Creado'} ${file}`);
+  for (const p of patterns) {
+    const hits = jsFiles.filter(globMatcher([p]));
+    if (!hits.length) {
+      console.log(C.yellow(`  ! "${p}" no coincide con ningún archivo JavaScript del proyecto (queda guardado igualmente)`));
+      continue;
+    }
+    for (const rel of hits) console.log(`  ${rel}  ${deps.has(rel) ? C.cyan(`librería — ${deps.get(rel)}`) : C.green('tu código — se ofusca')}`);
+  }
+}
+
 async function cmdServe(dir, args) {
   const cfg = await loadConfig({ dir, config: args.config, overrides: overridesFrom(args) });
   const target = fs.existsSync(cfg.outDir) ? cfg.outDir : null;
@@ -349,7 +453,7 @@ async function main() {
   if (args.version || args.v) return console.log(VERSION);
   const [command = 'help', dir = '.'] = args._;
   if (args.help || args.h || command === 'help') return console.log(HELP);
-  const commands = { build: cmdBuild, analyze: cmdAnalyze, init: cmdInit, serve: cmdServe, dev: cmdDev };
+  const commands = { build: cmdBuild, analyze: cmdAnalyze, init: cmdInit, serve: cmdServe, dev: cmdDev, deps: cmdDeps };
   if (!commands[command]) throw new BuildError(`Comando desconocido "${command}". Usa "builder help".`);
   await commands[command](dir, args);
 }

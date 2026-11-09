@@ -1,7 +1,8 @@
 // Orquestador: descubre dependencias, procesa cada tipo de archivo, verifica y publica la salida.
 import fs from 'node:fs';
 import path from 'node:path';
-import zlib from 'node:zlib';
+import { createHeavy, defaultCacheDir, autoWorkers } from './pool.js';
+import { gzipOf, brotliOf, mapLimit } from './compress.js';
 import { scanProject, matchFiles, globMatcher } from './files.js';
 import { resolveRef, classifyUrl, parseSrcset } from './urls.js';
 import { analyzeJs } from './jsinfo.js';
@@ -18,9 +19,10 @@ import {
   levelOf,
 } from './js.js';
 import { resolveObfuscatorOptions, ensureObfuscator } from './obfuscate.js';
-import { detectDependency } from './deps.js';
+import { detectDependency, dependencyPragma, packageNames } from './deps.js';
 import { assertSafeOutDir, writeStaging, swapIntoPlace, discardStaging, writeManifest, MANIFEST } from './output.js';
 import { verifyOutput } from './verify.js';
+import { rewriteTsImports } from './jsimports.js';
 import { buildReport } from './report.js';
 import {
   BuildError,
@@ -29,6 +31,8 @@ import {
   BOM,
   extOf,
   JS_EXT,
+  TS_EXT,
+  jsOutPath,
   CSS_EXT,
   HTML_EXT,
   shortHash,
@@ -40,7 +44,7 @@ import {
 
 export const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
-const MERGE_ATTRS = new Set(['src', 'type', 'defer', 'charset', 'language']);
+const MERGE_ATTRS = new Set(['src', 'type', 'defer', 'charset', 'language', 'data-builder']);
 const typeOfExt = (ext) =>
   HTML_EXT.has(ext)
     ? 'html'
@@ -88,6 +92,9 @@ class Context {
     this.depIncluded = globMatcher(cfg.dependencies.include);
     this.depExcluded = globMatcher(cfg.dependencies.exclude);
     this.depCache = new Map();
+    this.depMarks = new Map();
+    this.tsCode = new Map();
+    this.pkgNames = null;
     this.vendorPackages = [];
     this.chunkDir = cfg.js.chunkDir.replace(/\/+$/, '');
   }
@@ -122,6 +129,8 @@ class Context {
   }
 
   readText(rel, { kind = 'text', charset } = {}) {
+    // TypeScript: como JS se lee la versión ya transpilada (sin tipos).
+    if (kind === 'js' && this.tsCode.has(rel)) return { text: this.tsCode.get(rel), bom: false, encoding: 'utf8' };
     const key = `${rel}\0${kind}`;
     if (this.textCache.has(key)) return this.textCache.get(key);
     const buf = fs.readFileSync(this.abs(rel));
@@ -186,7 +195,7 @@ class Context {
     if (JS_EXT.has(ext) || CSS_EXT.has(ext)) {
       if (!this.workers.has(rel)) this.requireStandalone(rel, `new URL() en ${from}`);
     } else this.registerAsset(rel, from);
-    return rel;
+    return jsOutPath(rel);
   }
 
   requireStandalone(rel, reason, extra = {}) {
@@ -235,21 +244,50 @@ class Context {
   }
 
   hasOwnOutput(rel) {
-    const o = this.outputs.get(rel);
+    const o = this.outputs.get(rel) ?? (TS_EXT.has(extOf(rel)) ? this.outputs.get(jsOutPath(rel)) : undefined);
     return !!o && o.sources?.includes(rel);
   }
 
   /** ¿Es una librería de terceros? (a mano en dependencies.include/exclude, o detectada). */
+  // Prioridad: configuración (include/exclude) > marca en el HTML o en el archivo > detección automática.
   dependencyReason(rel) {
     if (this.depCache.has(rel)) return this.depCache.get(rel);
     const deps = this.cfg.dependencies;
+    const isJs = JS_EXT.has(extOf(rel)) && this.files.has(rel);
+    const text = isJs ? this.readText(rel, { kind: 'js' }).text : '';
+    const pragma = isJs ? dependencyPragma(text) : null;
+    const mark = this.depMarks.get(rel);
     let reason = null;
     if (this.depExcluded(rel)) reason = null;
     else if (this.depIncluded(rel)) reason = 'marcado a mano (dependencies.include)';
+    else if (mark === 'own' || pragma === 'own') reason = null;
+    else if (mark === 'dependency') reason = 'marcado en el HTML (data-builder="dependency")';
+    else if (pragma === 'dependency') reason = 'marcado en el propio archivo (@builder-dependency)';
     else if (/(^|\/)node_modules\//.test(rel)) reason = 'paquete de npm';
-    else if (deps.detect && JS_EXT.has(extOf(rel)) && this.files.has(rel)) reason = detectDependency(rel, this.readText(rel, { kind: 'js' }).text);
+    else if (deps.detect && isJs) reason = detectDependency(rel, text, { packages: this.packageHints() });
     this.depCache.set(rel, reason);
     return reason;
+  }
+
+  /** Paquetes del package.json más cercano (para reconocer librerías copiadas a mano). */
+  packageHints() {
+    if (this.pkgNames) return this.pkgNames;
+    this.pkgNames = new Map();
+    for (let dir = this.root, i = 0; i < 10; i++) {
+      const file = path.join(dir, 'package.json');
+      if (fs.existsSync(file)) {
+        try {
+          this.pkgNames = packageNames(JSON.parse(fs.readFileSync(file, 'utf8')));
+        } catch {
+          // package.json ilegible: no aporta pistas
+        }
+        break;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return this.pkgNames;
   }
 
   shouldObfuscate(rels) {
@@ -372,6 +410,70 @@ function loadPages(ctx) {
 }
 
 /** Decide qué páginas se procesan completas (entradas + enlazadas) y cuáles en modo conservador. */
+/**
+ * Transpila cada archivo TypeScript a JavaScript (solo quita los tipos: no baja el nivel de sintaxis).
+ * Usa el tsconfig.json del proyecto si existe. Lo que falle se avisa y sigue el camino normal
+ * (se copia sin cambios), así que nunca se pierde nada.
+ */
+async function transpileTypeScript(ctx) {
+  const list = [...ctx.files.keys()].filter((rel) => TS_EXT.has(extOf(rel)));
+  if (!list.length) return;
+  let tsconfigRaw;
+  const tsconfig = path.join(ctx.root, 'tsconfig.json');
+  if (fs.existsSync(tsconfig)) tsconfigRaw = fs.readFileSync(tsconfig, 'utf8');
+  const esbuild = await import('esbuild');
+  await mapLimit(list, 32, async (rel) => {
+    const source = ctx.readText(rel, { kind: 'ts' }).text;
+    try {
+      const r = await esbuild.transform(source, {
+        loader: 'ts',
+        sourcefile: rel,
+        target: 'esnext',
+        tsconfigRaw,
+        logLevel: 'silent',
+        supported: { 'import-attributes': true },
+      });
+      const dir = path.posix.dirname(rel);
+      // "./x" → la ruta que existirá en la salida (x.ts → x.js, x/index.ts → x/index.js…).
+      const complete = (spec) => {
+        const base = path.posix.normalize(path.posix.join(dir, spec));
+        for (const cand of ['.ts', '.mts', '.js', '.mjs', '/index.ts', '/index.js'].map((s) => base + s)) {
+          if (ctx.files.has(cand)) return spec + jsOutPath(cand).slice(base.length);
+        }
+        return null;
+      };
+      ctx.tsCode.set(rel, rewriteTsImports(r.code, complete));
+    } catch (err) {
+      const msg = String(err.errors?.[0]?.text ?? err.message).split('\n')[0];
+      ctx.warn(`TypeScript no válido (${msg}); se copia sin transpilar`, rel);
+    }
+  });
+}
+
+/** <script src="..." data-builder="dependency|own">: el usuario marca librerías (o código propio) en el HTML. */
+const MARK_VALUES = { dependency: 'dependency', dependencia: 'dependency', dep: 'dependency', own: 'own', propio: 'own' };
+function markDependencies(ctx, pages) {
+  for (const page of pages.values()) {
+    for (const s of page.model.scripts) {
+      if (!s.src || !s.attrs.has('data-builder')) continue;
+      const raw = String(s.attrs.get('data-builder') ?? '')
+        .trim()
+        .toLowerCase();
+      const value = MARK_VALUES[raw];
+      if (!value) {
+        ctx.warn(`data-builder="${raw}" no se reconoce; usa "dependency" o "own"`, page.rel);
+        continue;
+      }
+      const res = ctx.resolve(s.src.value, page.baseDir);
+      if (res.status !== 'ok') continue;
+      const prev = ctx.depMarks.get(res.rel);
+      if (prev && prev !== value)
+        ctx.warn(`"${res.rel}" está marcado como "${prev}" y como "${value}" en distintas páginas; se usa "${prev}"`, page.rel);
+      else ctx.depMarks.set(res.rel, value);
+    }
+  }
+}
+
 function selectEntries(ctx, pages) {
   const cfg = ctx.cfg;
   const extraEntries = { modules: [], classic: [], css: [] };
@@ -534,12 +636,35 @@ export async function runPipeline(cfg, opts = {}) {
   const t0 = Date.now();
   if (mode === 'build') assertSafeOutDir(cfg, { force: opts.force });
   const ctx = new Context(cfg, { ...opts, mode });
+  const workers = cfg.workers === 'auto' ? autoWorkers() : cfg.workers;
+  ctx.heavy = createHeavy({ root: cfg.root, workers, cacheDir: cfg.cache && mode === 'build' ? defaultCacheDir(cfg.root) : null });
+  try {
+    return await pipeline(ctx, cfg, opts, mode, t0);
+  } finally {
+    await ctx.heavy.close();
+  }
+}
+
+async function pipeline(ctx, cfg, opts, mode, t0) {
   const log = opts.log ?? (() => {});
+  // Tiempo de cada fase (perf.phases): para saber dónde se va el tiempo en proyectos reales.
+  const phases = [];
+  let phaseStart = Date.now();
+  let phaseName = 'preparación';
+  const mark = (next) => {
+    const now = Date.now();
+    phases.push([phaseName, now - phaseStart]);
+    phaseName = next;
+    phaseStart = now;
+  };
   if (ctx.obfuscatorOptions) await ensureObfuscator(cfg.root);
   if (cfg.js.minifier === 'terser' && cfg.js.minify) await ensureTerser(cfg.root);
 
+  mark('páginas');
   // 1. Páginas y entradas
+  await transpileTypeScript(ctx);
   const pages = loadPages(ctx);
+  markDependencies(ctx, pages);
   const extra = selectEntries(ctx, pages);
   const fullPages = [...pages.values()].filter((p) => p.full);
   const partialPages = [...pages.values()].filter((p) => !p.full);
@@ -548,6 +673,7 @@ export async function runPipeline(cfg, opts = {}) {
   for (const p of fullPages) collectRefs(ctx, p);
   for (const p of partialPages) collectRefs(ctx, p);
 
+  mark('módulos');
   // 2. Módulos ES agrupados por import map
   const groups = new Map();
   const groupFor = (page, importMap) => {
@@ -619,7 +745,7 @@ export async function runPipeline(cfg, opts = {}) {
     if (res.mode === 'per-file') {
       ctx.note(`módulos sin empaquetar (cada archivo minificado en su sitio): ${res.reason}`, [...g.pages].join(', ') || 'entries');
       for (const rel of res.inputs) ctx.requireStandalone(rel, 'módulo (modo sin empaquetar)', { module: true });
-      for (const rel of g.entries) entryOut.set(`${g.key}\0${rel}`, rel);
+      for (const rel of g.entries) entryOut.set(`${g.key}\0${rel}`, jsOutPath(rel));
       for (const [id, v] of g.virtual) {
         const info = analyzeJs(v.code, { module: true });
         if (!info.ok) continue;
@@ -632,25 +758,20 @@ export async function runPipeline(cfg, opts = {}) {
       continue;
     }
     log(`Módulos: ${g.entries.size} entradas, ${res.inputs.length} archivos, target ${res.target}`);
-    for (const o of res.outputs) {
-      const sources = o.inputs.length ? o.inputs : o.entry ? [o.entry] : [];
-      let code = o.code;
-      let map = o.map;
+    // Ofuscar/comprimir cada salida en paralelo; registrar después en el orden original (salida determinista).
+    const finals = await mapLimit(res.outputs, 64, async (o) => {
       const obfRels = o.virtualId ? [g.virtual.get(o.virtualId).page.rel] : o.isChunk ? o.inputs : [o.entry];
       if (!o.isVendor && ctx.shouldObfuscate(obfRels)) {
-        const r = obfuscateModule(ctx, code, o.outRel);
-        if (r.note) ctx.warn(r.note, o.outRel);
-        else {
-          code = r.code;
-          map = null;
-        }
-      } else {
-        const t = await terserPass(ctx, code, { isModule: true, level: levelOf(res.target) });
-        if (t !== code) {
-          code = t;
-          map = null;
-        }
+        const r = await obfuscateModule(ctx, o.code, o.outRel);
+        return r.note ? { code: o.code, map: o.map, warn: r.note } : { code: r.code, map: null };
       }
+      const t = await terserPass(ctx, o.code, { isModule: true, level: levelOf(res.target) });
+      return t !== o.code ? { code: t, map: null } : { code: o.code, map: o.map };
+    });
+    for (const [i, o] of res.outputs.entries()) {
+      const sources = o.inputs.length ? o.inputs : o.entry ? [o.entry] : [];
+      const { code, map, warn } = finals[i];
+      if (warn) ctx.warn(warn, o.outRel);
       if (o.virtualId) {
         const v = g.virtual.get(o.virtualId);
         inlineModuleCode.set(o.virtualId, code.replace(/\n$/, ''));
@@ -669,6 +790,7 @@ export async function runPipeline(cfg, opts = {}) {
     }
   }
 
+  mark('css');
   // 3. CSS enlazado
   const cssOut = new Map();
   const cssEntries = new Set(extra.css);
@@ -679,10 +801,14 @@ export async function runPipeline(cfg, opts = {}) {
         if (res.status === 'ok') cssEntries.add(res.rel);
         else if (res.status !== 'skip') ctx.reportBroken(page.rel, l.href.value, res);
       }
-  for (const rel of cssEntries) {
+  const cssList = [...cssEntries];
+  const cssBuilt = await mapLimit(cssList, 16, (rel) => {
     const hashed = cfg.hash && !extra.css.includes(rel);
-    const provisional = hashed ? `${ctx.chunkDir}/${path.posix.basename(rel)}` : rel;
-    const r = await buildCss(ctx, { entry: rel, outRel: provisional });
+    return buildCss(ctx, { entry: rel, outRel: hashed ? `${ctx.chunkDir}/${path.posix.basename(rel)}` : rel });
+  });
+  for (const [ci, rel] of cssList.entries()) {
+    const hashed = cfg.hash && !extra.css.includes(rel);
+    const r = cssBuilt[ci];
     if (r.error) {
       ctx.warn(`no se pudo procesar el CSS (${r.error}); se copia tal cual`, rel);
       cssOut.set(rel, ctx.emitCopy(rel, rel, 'copy-fallback'));
@@ -695,6 +821,7 @@ export async function runPipeline(cfg, opts = {}) {
     for (const i of r.inputs) ctx.cover(i, i === rel ? 'procesado' : 'empaquetado', outRel);
   }
 
+  mark('white-space');
   // 4. Detección de white-space: pre (para no colapsar espacios del HTML)
   let collapse = cfg.html.collapseWhitespace;
   if (collapse === 'auto') {
@@ -708,15 +835,28 @@ export async function runPipeline(cfg, opts = {}) {
       );
   }
 
+  mark('scripts clásicos');
   // 5. Scripts clásicos por página
-  const classicCache = new Map();
+  // Primero se planifican todas las páginas, luego se minifica/ofusca cada grupo distinto en paralelo
+  // y por último se registra todo en el orden original.
+  const pageRuns = [];
+  const uniqueRuns = new Map();
   for (const page of fullPages) {
     for (const run of classicRuns(ctx, page)) {
-      const files = run.items.map((c) => c.rel);
-      const key = `${files.join('|')}\0${run.items[0].key}`;
+      const key = `${run.items.map((c) => c.rel).join('|')}\0${run.items[0].key}`;
+      pageRuns.push({ page, run, key });
+      if (!uniqueRuns.has(key)) uniqueRuns.set(key, run);
+    }
+  }
+  const runKeys = [...uniqueRuns.keys()];
+  const runResults = await mapLimit(runKeys, 64, (key) => computeClassicRun(ctx, uniqueRuns.get(key)));
+  const computedRuns = new Map(runKeys.map((k, i) => [k, runResults[i]]));
+  const classicCache = new Map();
+  {
+    for (const { page, run, key } of pageRuns) {
       let out = classicCache.get(key);
       if (!out) {
-        out = await processClassicRun(ctx, run, page);
+        out = commitClassicRun(ctx, run, page, computedRuns.get(key));
         classicCache.set(key, out);
       }
       if (out.merged) {
@@ -736,6 +876,7 @@ export async function runPipeline(cfg, opts = {}) {
     }
   }
 
+  mark('edición html');
   // 6. Edición de cada página: módulos, CSS, inline, preload
   for (const page of fullPages) {
     for (const m of moduleRefs.filter((x) => x.page === page)) {
@@ -761,9 +902,11 @@ export async function runPipeline(cfg, opts = {}) {
   }
   for (const page of pages.values()) await processInline(ctx, page, collapse);
 
+  mark('workers y sueltos');
   // 7. Workers, archivos sueltos y rutas mencionadas (hasta que no aparezca nada nuevo)
   await drainQueues(ctx, cssOut);
 
+  mark('no referenciados');
   // 8. Archivos no referenciados
   const unref = [];
   for (const [rel, f] of ctx.files) {
@@ -781,6 +924,7 @@ export async function runPipeline(cfg, opts = {}) {
   }
   await drainQueues(ctx, cssOut);
 
+  mark('html final');
   // 9. Preloads y HTML final
   for (const { page, l } of preloadLinks) {
     const res = ctx.resolve(l.href.value, page.baseDir);
@@ -811,6 +955,7 @@ export async function runPipeline(cfg, opts = {}) {
     await finalizePage(ctx, page, collapse);
   }
 
+  mark('recursos');
   // 10. Recursos: todo lo demás se copia (sin perder nada)
   for (const [rel, f] of ctx.files) {
     if (ctx.hasOwnOutput(rel)) {
@@ -838,6 +983,7 @@ export async function runPipeline(cfg, opts = {}) {
     ctx.cover(rel, 'copiado', rel);
   }
 
+  mark('avisos');
   // 11. Avisos de rutas mencionadas en el código que ya no existirán
   for (const [rel, from] of ctx.mentions) {
     if (!ctx.outputs.has(rel) && ctx.coverage.get(rel)?.every((s) => s.startsWith('empaquetado'))) {
@@ -851,9 +997,12 @@ export async function runPipeline(cfg, opts = {}) {
     }
   }
 
+  mark('precompresión');
   // 12. Precompresión .gz / .br para servidores que sirven archivos comprimidos (nginx gzip_static, etc.)
-  if (cfg.compress && mode === 'build') precompress(ctx, cfg.compress === true ? ['gzip', 'brotli'] : [cfg.compress]);
+  if (cfg.compress && mode === 'build') await precompress(ctx, cfg.compress === true ? ['gzip', 'brotli'] : [cfg.compress]);
 
+  mark('informe de tamaños');
+  const report = await buildReport(ctx.outputs, ctx.heavy);
   const result = {
     version: VERSION,
     root: cfg.root,
@@ -873,15 +1022,18 @@ export async function runPipeline(cfg, opts = {}) {
       .map((rel) => ({ rel, reason: ctx.dependencyReason(rel) })),
     vendor: ctx.vendorPackages,
     obfuscated: !!ctx.obfuscatorOptions,
-    report: buildReport(ctx.outputs),
+    report,
+    perf: Object.assign(ctx.heavy.stats, { phases }),
     verify: null,
     durationMs: 0,
   };
   if (mode === 'analyze') {
+    mark('fin');
     result.durationMs = Date.now() - t0;
     return result;
   }
 
+  mark('escritura y verificación');
   // 12. Escritura, verificación y publicación
   let staging;
   try {
@@ -900,6 +1052,7 @@ export async function runPipeline(cfg, opts = {}) {
       files: [...ctx.outputs.keys()].sort(),
     });
     await swapIntoPlace(cfg, staging);
+    mark('fin');
   } catch (err) {
     if (staging && !opts.keepFailed) await discardStaging(staging);
     throw err;
@@ -910,26 +1063,21 @@ export async function runPipeline(cfg, opts = {}) {
 
 const COMPRESS_TYPES = new Set(['html', 'css', 'js', 'json', 'svg', 'text', 'map']);
 
-function precompress(ctx, kinds) {
-  for (const [rel, o] of [...ctx.outputs]) {
-    if (!COMPRESS_TYPES.has(o.type)) continue;
+async function precompress(ctx, kinds) {
+  const items = [...ctx.outputs].filter(([, o]) => COMPRESS_TYPES.has(o.type));
+  // En paralelo (pool de hilos de libuv); se registra en orden. El informe reutiliza estos mismos resultados.
+  const done = await mapLimit(items, 64, async ([, o]) => {
     const buf = o.copyFrom ? fs.readFileSync(o.copyFrom) : o.data;
-    if (buf.length < 1024) continue; // no compensa
-    if (kinds.includes('gzip')) {
-      const gz = zlib.gzipSync(buf, { level: 9 });
-      if (gz.length < buf.length) ctx.emit(`${rel}.gz`, gz, { type: 'compressed', action: 'gzip', sources: o.sources });
-    }
-    if (kinds.includes('brotli')) {
-      const br = zlib.brotliCompressSync(buf, {
-        params: {
-          [zlib.constants.BROTLI_PARAM_QUALITY]: 11,
-          [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT,
-          [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length,
-        },
-      });
-      if (br.length < buf.length) ctx.emit(`${rel}.br`, br, { type: 'compressed', action: 'brotli', sources: o.sources });
-    }
-  }
+    if (buf.length < 1024) return null; // no compensa
+    const [gz, br] = await Promise.all([kinds.includes('gzip') ? gzipOf(buf) : null, kinds.includes('brotli') ? brotliOf(buf) : null]);
+    return { buf, gz, br };
+  });
+  items.forEach(([rel, o], i) => {
+    const d = done[i];
+    if (!d) return;
+    if (d.gz && d.gz.length < d.buf.length) ctx.emit(`${rel}.gz`, d.gz, { type: 'compressed', action: 'gzip', sources: o.sources });
+    if (d.br && d.br.length < d.buf.length) ctx.emit(`${rel}.br`, d.br, { type: 'compressed', action: 'brotli', sources: o.sources });
+  });
 }
 
 function sumSizes(ctx, rels) {
@@ -957,21 +1105,41 @@ function markModuleImport(ctx, spec, baseDir, from, importMap) {
   else ctx.reportBroken(from, spec, r);
 }
 
-async function processClassicRun(ctx, run, page) {
+/** Parte costosa y sin efectos de un grupo de scripts clásicos: unir, minificar y ofuscar. */
+async function computeClassicRun(ctx, run) {
   const items = run.items;
   const first = items[0];
-  if (items.length === 1 && !first.info.ok) {
+  if (items.length === 1 && !first.info.ok) return { copy: true };
+  let mergeError = null;
+  if (items.length > 1) {
+    // Separadores con ; y salto de línea: evitan que un archivo sin ; final se "pegue" al siguiente.
+    const code = items.map((c) => ctx.readText(c.rel, { kind: 'js', charset: c.s.attrs.get('charset') }).text.replace(/\s*$/, '\n')).join(';\n');
+    const info = analyzeJs(code, { module: false });
+    if (info.ok) return { merged: await processClassic(ctx, { code, id: items.map((c) => c.rel).join('+'), info, obfuscate: first.obf }) };
+    mergeError = info.error;
+  }
+  const separate = await Promise.all(
+    items.map((c) => {
+      const { text } = ctx.readText(c.rel, { kind: 'js', charset: c.s.attrs.get('charset') });
+      return processClassic(ctx, { code: text, id: c.rel, info: c.info, obfuscate: c.obf, sourcemap: !!ctx.cfg.sourcemap });
+    }),
+  );
+  return { separate, mergeError };
+}
+
+/** Registra el resultado de computeClassicRun (salidas, cobertura y notas) en orden. */
+function commitClassicRun(ctx, run, page, comp) {
+  const items = run.items;
+  const first = items[0];
+  if (comp.copy) {
     ctx.warn(`no se pudo analizar (${first.info.error}); se copia sin cambios`, first.rel);
     const outRel = ctx.emitCopy(first.rel, first.rel, 'copy-fallback');
     ctx.cover(first.rel, 'copiado sin cambios (no se pudo analizar)', outRel);
     return { merged: false, outs: [{ outRel, changed: false }] };
   }
-  if (items.length > 1) {
-    // Separadores con ; y salto de línea: evitan que un archivo sin ; final se "pegue" al siguiente.
-    const code = items.map((c) => ctx.readText(c.rel, { kind: 'js', charset: c.s.attrs.get('charset') }).text.replace(/\s*$/, '\n')).join(';\n');
-    const info = analyzeJs(code, { module: false });
-    if (info.ok) {
-      const r = await processClassic(ctx, { code, id: items.map((c) => c.rel).join('+'), info, obfuscate: first.obf });
+  {
+    if (comp.merged) {
+      const r = comp.merged;
       for (const n of r.notes) ctx.note(n, `scripts unidos (${items.map((c) => c.rel).join(', ')})`);
       const outRel = ctx.emitCode(`${ctx.chunkDir}/scripts-${shortHash(r.code)}.js`, r.code, null, {
         type: 'js',
@@ -985,16 +1153,15 @@ async function processClassicRun(ctx, run, page) {
       for (const c of items) ctx.cover(c.rel, 'unido', outRel);
       return { merged: true, outRel };
     }
-    ctx.warn(`no se pudieron unir (${info.error}); se procesan por separado`, page.rel);
+    if (comp.mergeError) ctx.warn(`no se pudieron unir (${comp.mergeError}); se procesan por separado`, page.rel);
   }
   // Un solo archivo, o una unión fallida: cada uno se procesa en su sitio.
   const outs = [];
-  for (const c of items) {
-    const { text } = ctx.readText(c.rel, { kind: 'js', charset: c.s.attrs.get('charset') });
-    const r = await processClassic(ctx, { code: text, id: c.rel, info: c.info, obfuscate: c.obf, sourcemap: !!ctx.cfg.sourcemap });
+  for (const [i, c] of items.entries()) {
+    const r = comp.separate[i];
     for (const n of r.notes) ctx.note(n, c.rel);
     if (c.reasons.length && c.reasons[0] !== 'unión desactivada') ctx.note(`no se une con otros scripts: ${c.reasons.join(', ')}`, c.rel);
-    const outRel = ctx.cfg.hash ? ctx.hashedPath(c.rel, r.code, '.js') : c.rel;
+    const outRel = ctx.cfg.hash ? ctx.hashedPath(c.rel, r.code, '.js') : jsOutPath(c.rel);
     ctx.emitCode(outRel, r.code, r.map, { type: 'js', action: 'minify', sources: [c.rel], before: ctx.files.get(c.rel).size });
     ctx.cover(c.rel, 'procesado', outRel);
     outs.push({ outRel, changed: true });
@@ -1125,52 +1292,65 @@ async function drainQueues(ctx, cssOut) {
         }
         let code = r.code;
         if (ctx.shouldObfuscate([rel])) {
-          const o = obfuscateModule(ctx, code, rel);
+          const o = await obfuscateModule(ctx, code, rel);
           if (o.note) ctx.warn(o.note, rel);
           code = o.code;
         } else code = await terserPass(ctx, code, { isModule: true, level: 2020 });
         const sources = [...r.consumed];
-        ctx.emitCode(rel, code, code === r.code ? r.map : null, {
+        ctx.emitCode(jsOutPath(rel), code, code === r.code ? r.map : null, {
           type: 'js',
           module: true,
           action: 'worker',
           sources,
           before: sumSizes(ctx, sources),
         });
-        for (const s of sources) ctx.cover(s, s === rel ? 'procesado (worker)' : 'empaquetado', rel);
+        for (const s of sources) ctx.cover(s, s === rel ? 'procesado (worker)' : 'empaquetado', jsOutPath(rel));
       } else ctx.requireStandalone(rel, `worker clásico (${w.kind})`, { classic: true });
     }
+    // Análisis en orden, trabajo pesado en paralelo, registro otra vez en orden.
+    const jobs = [];
     for (const [rel, s] of ctx.standalone) {
       if (ctx.done.has(`s:${rel}`)) continue;
       ctx.done.add(`s:${rel}`);
       progressed = true;
       if (ctx.hasOwnOutput(rel) || !ctx.files.has(rel)) continue;
-      await processStandalone(ctx, rel, s, cssOut);
+      const job = planStandalone(ctx, rel, s, cssOut);
+      if (job) jobs.push(job);
     }
+    const results = await mapLimit(jobs, 64, (j) => j.run());
+    jobs.forEach((j, i) => j.commit(results[i]));
     if (!progressed) return;
   }
   throw new BuildError('Demasiadas rondas al resolver dependencias (¿ciclo inesperado?).');
 }
 
-async function processStandalone(ctx, rel, s, cssOut) {
+/**
+ * Prepara un archivo suelto: el análisis (que descubre más dependencias) se hace ya, en orden;
+ * devuelve {run, commit}: run() es la parte costosa y sin efectos, commit() registra el resultado.
+ */
+function planStandalone(ctx, rel, s, cssOut) {
   const ext = extOf(rel);
   const dir = path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel);
   if (CSS_EXT.has(ext)) {
-    const r = await buildCss(ctx, { entry: rel, outRel: rel });
-    if (r.error) {
-      ctx.warn(`no se pudo procesar el CSS (${r.error.split('\n')[0]}); se copia tal cual`, rel);
-      ctx.emitCopy(rel, rel, 'copy-fallback');
-      ctx.cover(rel, 'copiado sin cambios (error al procesar)', rel);
-      return;
-    }
-    ctx.emitCode(rel, r.code, r.map, { type: 'css', action: 'standalone', sources: [rel], before: ctx.files.get(rel).size });
-    for (const i of r.inputs) ctx.cover(i, i === rel ? 'procesado (suelto)' : 'empaquetado', rel);
-    if (!cssOut.has(rel)) cssOut.set(rel, rel);
-    return;
+    // buildCss registra los recursos de url() mientras compila: eso solo añade trabajo a la siguiente ronda.
+    return {
+      run: () => buildCss(ctx, { entry: rel, outRel: rel }),
+      commit: (r) => {
+        if (r.error) {
+          ctx.warn(`no se pudo procesar el CSS (${r.error.split('\n')[0]}); se copia tal cual`, rel);
+          ctx.emitCopy(rel, rel, 'copy-fallback');
+          ctx.cover(rel, 'copiado sin cambios (error al procesar)', rel);
+          return;
+        }
+        ctx.emitCode(rel, r.code, r.map, { type: 'css', action: 'standalone', sources: [rel], before: ctx.files.get(rel).size });
+        for (const i of r.inputs) ctx.cover(i, i === rel ? 'procesado (suelto)' : 'empaquetado', rel);
+        if (!cssOut.has(rel)) cssOut.set(rel, rel);
+      },
+    };
   }
   if (!JS_EXT.has(ext)) {
     ctx.registerAsset(rel, s.reason);
-    return;
+    return null;
   }
   const auto = ctx.jsInfo(rel, 'auto');
   const isModule = !s.classic && (s.module || (auto.ok && (auto.hasModuleSyntax || auto.hasImportMeta)) || (!auto.ok && auto.isModule));
@@ -1179,12 +1359,11 @@ async function processStandalone(ctx, rel, s, cssOut) {
     ctx.warn(`no se pudo analizar (${info.error}); se copia sin cambios`, rel);
     ctx.emitCopy(rel, rel, 'copy-fallback');
     ctx.cover(rel, 'copiado sin cambios (no se pudo analizar)', rel);
-    return;
+    return null;
   }
   ctx.noteJsInfo(rel, info, dir);
   const { text } = ctx.readText(rel, { kind: 'js' });
   const obfuscate = ctx.shouldObfuscate([rel]);
-  let r;
   if (isModule) {
     for (const imp of info.imports) if (imp.spec) markModuleImport(ctx, imp.spec, dir, rel, null);
     for (const u of info.urls) {
@@ -1192,11 +1371,15 @@ async function processStandalone(ctx, rel, s, cssOut) {
       if (res.status === 'ok') ctx.urlTarget(res.rel, rel);
       else ctx.reportBroken(rel, u.spec, res);
     }
-    r = await processModuleStandalone(ctx, { code: text, id: rel, info, obfuscate, sourcemap: !!ctx.cfg.sourcemap });
-  } else {
-    r = await processClassic(ctx, { code: text, id: rel, info, obfuscate, sourcemap: !!ctx.cfg.sourcemap });
   }
-  for (const n of r.notes) ctx.note(n, rel);
-  ctx.emitCode(rel, r.code, r.map, { type: 'js', module: isModule, action: 'standalone', sources: [rel], before: ctx.files.get(rel).size });
-  ctx.cover(rel, `procesado suelto (${s.reason})`, rel);
+  const job = { code: text, id: rel, info, obfuscate, sourcemap: !!ctx.cfg.sourcemap };
+  return {
+    run: () => (isModule ? processModuleStandalone(ctx, job) : processClassic(ctx, job)),
+    commit: (r) => {
+      for (const n of r.notes) ctx.note(n, rel);
+      const out = jsOutPath(rel);
+      ctx.emitCode(out, r.code, r.map, { type: 'js', module: isModule, action: 'standalone', sources: [rel], before: ctx.files.get(rel).size });
+      ctx.cover(rel, `procesado suelto (${s.reason})`, out);
+    },
+  };
 }

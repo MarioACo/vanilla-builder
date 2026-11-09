@@ -39,6 +39,10 @@ export const DEFAULTS = {
   // Librerías de terceros: se detectan solas y no se ofuscan salvo que se pida.
   dependencies: { detect: true, obfuscate: false, include: [], exclude: [] },
   compress: false,
+  // Caché persistente de las transformaciones lentas (ofuscación, terser) entre compilaciones.
+  cache: true,
+  // Hilos para ofuscar/comprimir en paralelo: "auto" (núcleos - 1, máx. 8), un número, o 0 (sin hilos).
+  workers: 'auto',
 };
 
 const NESTED = ['html', 'css', 'js', 'json', 'dependencies'];
@@ -113,6 +117,9 @@ export function normalizeConfig(raw, errors = []) {
   if (typeof cfg.base !== 'string' || !cfg.base.startsWith('/')) errors.push('"base" debe empezar con "/" (ej. "/" o "/mi-sitio/").');
   else if (!cfg.base.endsWith('/')) cfg.base += '/';
   if (typeof cfg.hash !== 'boolean') errors.push('"hash" debe ser true o false.');
+  if (typeof cfg.cache !== 'boolean') errors.push('"cache" debe ser true o false.');
+  if (!(cfg.workers === 'auto' || (Number.isInteger(cfg.workers) && cfg.workers >= 0 && cfg.workers <= 64)))
+    errors.push('"workers" debe ser "auto" o un número entre 0 y 64.');
   cfg.js.drop = asList(cfg.js.drop);
   if (cfg.js.drop.some((d) => !['console', 'debugger'].includes(d))) errors.push('"js.drop" solo admite "console" y "debugger".');
   if (typeof cfg.js.chunkDir !== 'string' || /(^|\/)\.\.(\/|$)|^\//.test(cfg.js.chunkDir))

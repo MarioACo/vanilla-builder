@@ -124,7 +124,6 @@ export function analyzeJs(code, opts = {}) {
   const info = {
     ok: true,
     isModule,
-    level: detectLevel(code, sourceType),
     strict,
     top: isModule ? new Map() : globalBindings(ast, strict),
     imports: [],
@@ -139,6 +138,12 @@ export function analyzeJs(code, opts = {}) {
     hasImportMeta: false,
     hasModuleSyntax: false,
   };
+  // El nivel ES cuesta varios parseos: solo se calcula si alguien lo pide (la mayoría de análisis no lo necesitan).
+  let level;
+  Object.defineProperty(info, 'level', {
+    enumerable: true,
+    get: () => (level === undefined ? (level = detectLevel(code, sourceType)) : level),
+  });
   const addWorker = (arg, kind, optsNode) => {
     if (!arg) return;
     let spec = null;
@@ -249,8 +254,19 @@ export function checkSyntax(code, isModule) {
  * `allowPrefix` permite nombres nuevos con ese prefijo (los que añade el ofuscador).
  */
 export function compareGlobals(before, afterCode, allowPrefix = null) {
-  const after = analyzeJs(afterCode, { module: false });
-  if (!after.ok) return { ok: false, reason: `el resultado no es JS válido (${after.error})` };
+  // Solo hacen falta las globales: un parseo y un recorrido, sin el análisis completo.
+  let ast;
+  try {
+    ast = parse(afterCode, 'script', LATEST);
+  } catch (err) {
+    return { ok: false, reason: `el resultado no es JS válido (${err.message})` };
+  }
+  const after = {
+    top: globalBindings(
+      ast,
+      ast.body.some((s) => s.directive === 'use strict'),
+    ),
+  };
   for (const [name, kind] of before) {
     if (!after.top.has(name)) return { ok: false, reason: `desaparece la global "${name}"` };
     if (after.top.get(name) !== kind) return { ok: false, reason: `la global "${name}" cambia de tipo (${kind} → ${after.top.get(name)})` };

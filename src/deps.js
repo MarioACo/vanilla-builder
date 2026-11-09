@@ -116,16 +116,75 @@ const KNOWN = new RegExp(
   'i',
 );
 
+// Marca escrita por el usuario en el primer comentario del archivo.
+const PRAGMA = /@builder-(dependency|dependencia|own|propio)\b/i;
+// Envoltorio UMD/AMD/CommonJS: el formato con el que se publican las librerías para usarlas con <script>.
+const UMD = [
+  /typeof\s+define\s*===?\s*["']function["']\s*&&\s*define\.amd/,
+  /typeof\s+exports\s*===?\s*["']object["']\s*&&\s*typeof\s+module\s*!==?\s*["']undefined["']/,
+  /typeof\s+module\s*===?\s*["']object["']\s*&&\s*(?:typeof\s+)?module\.exports/,
+];
+
+/**
+ * Marca explícita en el propio archivo: un comentario inicial con @builder-dependency o @builder-own.
+ * @returns {'dependency'|'own'|null}
+ */
+export function dependencyPragma(code = '') {
+  const head = code.slice(0, 2000);
+  const comment = /^\s*(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)/.exec(head)?.[0] ?? '';
+  const m = PRAGMA.exec(comment);
+  if (!m) return null;
+  return /^(dependency|dependencia)$/i.test(m[1]) ? 'dependency' : 'own';
+}
+
+/** Nombre "de paquete" de un archivo: jquery-3.7.1.min.js → jquery, chart.umd.js → chart. */
+export function packageLikeName(fileName) {
+  return fileName
+    .toLowerCase()
+    .replace(/\.(m?js|cjs)$/, '')
+    .replace(/[.-](min|prod|production|umd|esm|es|module|cjs|iife|bundle|browser|global|dist)\b/g, '')
+    .replace(/[@.-]v?\d+(\.\d+){1,3}(-[\w.]+)?$/, '')
+    .replace(/[.-](min|prod|production|umd|esm|es|module|cjs|iife|bundle|browser|global|dist)$/g, '');
+}
+
+/**
+ * Nombres de los paquetes declarados en el package.json del proyecto, normalizados
+ * (chart.js → chart, @popperjs/core → popperjs), para reconocer copias a mano en js/.
+ * @returns {Map<string, string>} nombre normalizado → nombre en package.json
+ */
+export function packageNames(pkg) {
+  const names = new Map();
+  // devDependencies no: suelen ser herramientas (eslint, prettier…) y darían falsos positivos.
+  for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
+    for (const full of Object.keys(pkg?.[field] ?? {})) {
+      const lower = full.toLowerCase();
+      const [scope, bare] = lower.startsWith('@') ? lower.slice(1).split('/') : [null, lower];
+      for (const n of [bare, scope]) {
+        if (!n || n.length < 3) continue;
+        for (const key of [n, n.replace(/\.js$/, '')]) if (!names.has(key)) names.set(key, full);
+      }
+    }
+  }
+  // Nombres demasiado genéricos para concluir nada solo por el nombre del archivo.
+  for (const generic of ['core', 'utils', 'util', 'app', 'main', 'index', 'common', 'types', 'lib', 'api']) names.delete(generic);
+  return names;
+}
+
 /**
  * ¿Parece una librería de terceros? Devuelve el motivo o null.
  * @param {string} rel ruta relativa (POSIX)
  * @param {string} code contenido
+ * @param {{packages?: Map<string, string>}} [hints] nombres de package.json del proyecto
  */
-export function detectDependency(rel, code = '') {
+export function detectDependency(rel, code = '', hints = {}) {
   if (DEP_DIRS.test(rel)) return `está en ${rel.match(DEP_DIRS)[2]}/`;
   const name = rel.split('/').pop();
   if (KNOWN.test(name)) return 'nombre de librería conocida';
   if (MIN_NAME.test(name)) return 'versión ya compilada (.min.js / .umd.js)';
+  const pkgName = packageLikeName(name);
+  if (hints.packages?.has(pkgName)) return `se llama como el paquete "${hints.packages.get(pkgName)}" de tu package.json`;
+  const edges = code.length > 8000 ? code.slice(0, 5000) + code.slice(-3000) : code;
+  if (UMD.some((re) => re.test(edges))) return 'envoltorio UMD/AMD (formato de librería publicada)';
   // Cabecera de librería publicada: /*! o @license con número de versión (jQuery v3.7.1, Bootstrap v5.3.0...).
   // Una cabecera propia sin versión ("/*! Mi app (c) 2026 */") no basta.
   const header = /^\s*\/\*[\s\S]*?\*\//.exec(code.slice(0, 3000))?.[0] ?? '';

@@ -9,8 +9,11 @@ Detecta solo las dependencias de cada página, verifica la salida antes de publi
 
 - **Cero configuración**: apúntalo a una carpeta con `.html` y listo.
 - **Sin pérdida**: cada archivo del proyecto termina con un destino conocido (procesado, empaquetado, copiado u omitido a propósito) y la salida se verifica antes de reemplazar `dist/`.
-- **Ligero**: 57 KB propios; la instalación base son 8 paquetes (el grueso es el binario de esbuild). El ofuscador y terser se instalan solo si los usas.
-- **Node 16 o superior** (probado en 16, 18, 20, 22 y 24).
+- **Rápido**: la ofuscación y terser van en hilos paralelos, y una caché persistente hace casi gratis recompilar lo que no cambió (sitio de prueba de 40 páginas ofuscado: 11–18 s en 0.1.0 → 7 s la primera vez, 1,8 s al recompilar). Ver [Velocidad](#velocidad).
+- **Tú decides qué es una librería**: el código de terceros se detecta y nunca se ofusca; lo corriges desde el HTML, el propio archivo o `builder deps`. Ver [Dependencias](#dependencias-de-terceros-y-ofuscación).
+- **TypeScript incluido**: `<script src="app.ts">` funciona tal cual; la salida es `.js`.
+- **Ligero**: la instalación base son 8 paquetes (el grueso es el binario de esbuild). El ofuscador y terser se instalan solo si los usas.
+- **Node 16 o superior** (probado en 16, 18, 20, 22 y 24, en Linux, Windows y macOS).
 
 ## Instalación
 
@@ -29,6 +32,7 @@ npm install --save-dev terser                   # solo si quieres la compresión
 builder build mi-sitio                  # compila en mi-sitio/dist
 builder build mi-sitio --obfuscate      # además ofusca tu JavaScript (nivel medium)
 builder analyze mi-sitio                # muestra qué pasará con cada archivo, sin escribir nada
+builder deps mi-sitio                   # qué JS son librerías (no se ofuscan) y cuáles son tuyos
 builder init mi-sitio                   # crea builder.config.json con lo detectado
 builder dev mi-sitio                    # compila, vigila cambios y sirve dist/ con recarga automática
 builder serve mi-sitio                  # sirve dist/ para probarlo
@@ -48,7 +52,9 @@ Opciones frecuentes de `build` (todas tienen equivalente en la configuración):
 | `--target es2018` | Transpila a un nivel concreto (por defecto: el del propio código). |
 | `--drop-console` | Quita `console.*` y `debugger`. |
 | `--entry`, `--include`, `--ignore` | Entradas explícitas, archivos forzados y excluidos (repetibles). |
-| `--json` | Resultado en JSON para CI (código de salida 1 si algo falla). |
+| `--workers <n\|auto>` | Hilos para ofuscar/terser (`0` = sin hilos). |
+| `--no-cache` | No usa la caché de compilaciones anteriores. |
+| `--json` | Resultado en JSON para CI (código de salida 1 si algo falla), con el tiempo de cada fase. |
 
 ## Qué detecta solo
 
@@ -83,13 +89,41 @@ La batería de pruebas abre cada sitio de ejemplo **original y compilado en Chro
 
 ## Dependencias de terceros y ofuscación
 
-Ofuscar jQuery, Bootstrap o un paquete de npm no protege nada tuyo, los hace más lentos y puede incumplir su licencia. Por eso, al ofuscar:
+Ofuscar jQuery, Bootstrap o un paquete de npm no protege nada tuyo, los hace más lentos y puede incumplir su licencia. Por eso, al ofuscar, esto se detecta como dependencia y no se toca:
 
-- Se detectan como dependencia los archivos en `vendor/`, `node_modules/`, `third-party/`…, los nombres de librerías conocidas (`jquery-3.7.1.min.js`, `bootstrap.bundle.js`…), los `.min.js`/`.umd.js`, el código ya minificado y las cabeceras de licencia con versión (`/*! Foo v1.2.0 */`).
+- Archivos en `vendor/`, `node_modules/`, `third-party/`…
+- Nombres de librerías conocidas (`jquery-3.7.1.min.js`, `bootstrap.bundle.js`…) y versiones compiladas (`.min.js`, `.umd.js`).
+- Archivos que se llaman como un paquete de las `dependencies` de tu `package.json` (`js/chart.umd.js` si dependes de `chart.js`).
+- Envoltorios UMD/AMD (el formato en que se publican las librerías), cabeceras de licencia con versión (`/*! Foo v1.2.0 */`) y código ya minificado.
 - Los paquetes de npm que importa tu código de módulos se separan en `assets/vendor/` (sin ofuscar y con su estado compartido intacto).
-- `builder analyze` lista qué detectó y por qué.
 
-Para corregirlo a mano:
+Para ver qué se detectó y por qué:
+
+```bash
+builder deps mi-sitio
+```
+
+¿Algo mal? Hay tres formas de corregirlo; usa la que te resulte más cómoda:
+
+```html
+<!-- 1. En el HTML -->
+<script src="js/mi-lib.js" data-builder="dependency"></script>
+<script src="js/app.min.js" data-builder="own"></script>
+```
+
+```js
+/* 2. Al principio del propio archivo */
+/* @builder-dependency */   // o: /* @builder-own */
+```
+
+```bash
+# 3. Desde la terminal (edita builder.config.json por ti y conserva el resto)
+builder deps add "js/libs/**"     # son librerías: no ofuscar
+builder deps own js/app.min.js    # es mi código: ofuscarlo
+builder deps reset js/app.min.js  # volver a la detección automática
+```
+
+La configuración tiene la última palabra sobre las marcas, y las marcas sobre la detección automática:
 
 ```json
 {
@@ -106,6 +140,37 @@ Para corregirlo a mano:
 
 Niveles: `low` (casi sin coste), `medium` (recomendado), `high` y `max` (además se defiende de ser formateado o modificado; más pesado y lento). Las opciones que cambian el comportamiento (`debugProtection`, `disableConsoleOutput`, `renameGlobals`) nunca se activan solas; puedes pasarlas con un objeto: `"obfuscate": { "preset": "high", "debugProtection": true }`. Tus comentarios de licencia (`/*! … */`, `@license`) se conservan.
 
+## TypeScript
+
+Apunta tu HTML a archivos `.ts` (o al nombre `.js`, como recomienda el propio TypeScript) y compila:
+
+```html
+<script type="module" src="js/main.ts"></script>
+```
+
+- Cada `.ts`/`.mts`/`.cts` se transpila con esbuild usando tu `tsconfig.json` (se quitan los tipos, el nivel de sintaxis no cambia) y luego pasa por el mismo proceso que el JavaScript: empaquetado, ofuscación y verificación.
+- La salida es `.js` (`.mjs`/`.cjs`) y el HTML se reescribe para apuntar a ella. Siguen funcionando `import './x.ts'`, `import './x'`, `import './carpeta'` y `new URL('./worker.ts', import.meta.url)`.
+- Los `.d.ts` y los `*.test.ts` no se publican.
+- Builder no comprueba tipos: para eso, ejecuta `tsc --noEmit` en tu CI.
+
+## Velocidad
+
+Medido con `npm run bench` (un sitio generado con 40 páginas, 240 módulos, 120 scripts clásicos, 30 CSS y 200 imágenes; mediana de 3 ejecuciones en un i7-11700F, Node 24, Windows):
+
+| Compilación | 0.1.0 | 0.2.0, primera vez | 0.2.0, recompilar (caché) |
+| --- | ---: | ---: | ---: |
+| Por defecto | 3,7 s | 1,9 s | 1,4 s |
+| `--obfuscate` | 11,5–17,9 s | 7,0 s | 1,8 s |
+| `--hash --compress` | 2,6–3,8 s | 2,1 s | 1,1 s |
+| `--minifier terser` | 5,6–6,0 s | 3,7 s | 1,6 s |
+
+Cómo:
+
+- **Hilos**: la ofuscación, terser y la comprobación final de sintaxis van en hilos de trabajo (`workers: "auto"` ≈ núcleos físicos, máximo 8). El hilo principal también trabaja, y los hilos solo arrancan cuando hay suficiente trabajo en cola para compensar su arranque, así que un proyecto pequeño nunca va más lento.
+- **Caché persistente**: los resultados se guardan por contenido en `node_modules/.cache/vanilla-builder` (o en el temporal del sistema). Misma entrada + mismas opciones + mismas versiones = misma salida, byte a byte; las pruebas lo comprueban. Con `BUILDER_CACHE_DIR` puedes conservarla entre ejecuciones de CI. `--no-cache` o `"cache": false` la desactivan.
+- **En paralelo y en orden**: los archivos independientes se procesan a la vez, pero se registran en el orden original, así que la salida no depende de los tiempos.
+- `--json` incluye `perf.phases` (milisegundos por fase) para ver dónde se va el tiempo en tu proyecto.
+
 ## Configuración (`builder.config.json`)
 
 ```json
@@ -120,6 +185,8 @@ Niveles: `low` (casi sin coste), `medium` (recomendado), `high` y `max` (además
   "hash": false,
   "sourcemap": false,
   "compress": false,
+  "cache": true,
+  "workers": "auto",
   "base": "/",
   "sri": "auto",
   "html": { "minify": true, "removeComments": true, "collapseWhitespace": "auto" },
@@ -146,6 +213,7 @@ console.log(result.report.totals, result.warnings);
 
 ```bash
 npm test               # unitarias + integración (Node 18+; en Node 16: npm run test:node16)
+npm run bench          # velocidad sobre un sitio generado, primera vez y con caché
 npm run test:browser   # equivalencia real en Chromium (busca Chrome/Edge o usa BUILDER_CHROMIUM)
 BUILDER_NODE=/ruta/node16 npm run test:browser   # compila con otro Node y verifica en el navegador
 ```
@@ -156,6 +224,7 @@ BUILDER_NODE=/ruta/node16 npm run test:browser   # compila con otro Node y verif
 - Con `hash: true`, los JS/CSS cambian de nombre; si tu código los pide por texto, Builder publica también la ruta original y lo avisa.
 - Colapsar espacios en HTML cambia `textContent` (no lo que se ve). Para conservarlo byte a byte: `"html": { "collapseWhitespace": false }`.
 - `import()` con rutas calculadas sin prefijo fijo hace que ese grupo de módulos se minifique archivo por archivo en su sitio (sin empaquetar), para no romper rutas.
+- TypeScript: no se comprueban tipos, no hay `.tsx`/JSX, y los source maps apuntan al JavaScript ya sin tipos, no a las líneas del `.ts`.
 
 ## Licencia
 

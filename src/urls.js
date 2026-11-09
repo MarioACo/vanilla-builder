@@ -61,6 +61,9 @@ export function resolveRef(raw, baseDir, ctx, opts = {}) {
   for (const c of candidates) {
     if (ctx.files.has(c)) return { status: 'ok', rel: c, info };
   }
+  // Convención de TypeScript: se escribe "./x.js" y el archivo es x.ts (su salida será justo x.js).
+  const ts = !isDirLike && /\.(m|c)?js$/i.test(rel) ? rel.replace(/\.(m|c)?js$/i, (_, p) => `.${p ?? ''}ts`) : null;
+  if (ts && ctx.files.has(ts)) return { status: 'ok', rel: ts, info };
   for (const c of candidates) {
     if (ctx.ignoredSet?.has(c)) return { status: 'ignored', rel: c, info };
     // Diferencia solo de mayúsculas: en Windows funciona, en un servidor Linux no.

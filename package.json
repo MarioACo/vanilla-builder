@@ -1,6 +1,6 @@
 {
   "name": "vanilla-builder",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Zero-config bundler, minifier and obfuscator for vanilla HTML, CSS and JavaScript sites. Detects every dependency, verifies the output and never loses a file.",
   "type": "module",
   "main": "src/index.js",
@@ -24,7 +24,8 @@
     "test:browser": "node --test test/browser.test.js",
     "test:node16": "node test/unit.test.js && node test/build.test.js",
     "check": "node --test test/unit.test.js test/build.test.js test/browser.test.js",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test",
+    "bench": "node bench/run.mjs"
   },
   "keywords": [
     "bundler",
@@ -36,7 +37,10 @@
     "css",
     "javascript",
     "build",
-    "esbuild"
+    "esbuild",
+    "typescript",
+    "obfuscation",
+    "minifier"
   ],
   "author": "MarioACo",
   "license": "MIT",

@@ -55,7 +55,11 @@ export function stripBom(text) {
 
 export const extOf = (p) => path.posix.extname(p).toLowerCase();
 
-export const JS_EXT = new Set(['.js', '.mjs', '.cjs']);
+// TypeScript se transpila al empezar y desde ahí se trata como JavaScript (sale con extensión .js).
+export const TS_EXT = new Set(['.ts', '.mts', '.cts']);
+export const JS_EXT = new Set(['.js', '.mjs', '.cjs', ...TS_EXT]);
+/** Ruta de salida de un script: app.ts → app.js, x.mts → x.mjs, x.cts → x.cjs. */
+export const jsOutPath = (rel) => rel.replace(/\.(m|c)?ts$/i, (_, p) => `.${(p ?? '').toLowerCase()}js`);
 export const CSS_EXT = new Set(['.css']);
 export const HTML_EXT = new Set(['.html', '.htm']);
 export const JSON_EXT = new Set(['.json', '.webmanifest', '.map']);

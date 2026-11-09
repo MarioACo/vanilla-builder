@@ -1,8 +1,8 @@
 // Verificación de la salida antes de publicarla: referencias, sintaxis, escritura y cobertura.
 import fs from 'node:fs';
 import path from 'node:path';
-import * as acorn from 'acorn';
-import * as walk from 'acorn-walk';
+import { jsImports } from './jsimports.js';
+import { mapLimit } from './compress.js';
 import { parseHtml } from './html.js';
 import { classifyUrl, parseSrcset } from './urls.js';
 
@@ -54,17 +54,6 @@ export function cssRefs(css) {
   return refs;
 }
 
-function jsImports(code, isModule) {
-  const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: isModule ? 'module' : 'script', allowHashBang: true });
-  const out = [];
-  walk.full(ast, (n) => {
-    if ((n.type === 'ImportDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'ExportNamedDeclaration') && n.source)
-      out.push(n.source.value);
-    if (n.type === 'ImportExpression' && n.source.type === 'Literal' && typeof n.source.value === 'string') out.push(n.source.value);
-  });
-  return out;
-}
-
 /**
  * @param {string} staging carpeta temporal escrita
  * @param {Map<string, object>} outputs archivos generados (rel → {data|copyFrom, type, size})
@@ -97,6 +86,11 @@ export async function verifyOutput(staging, outputs, ctx) {
     }
   };
 
+  // Parseo de los JS generados: en paralelo (hilos) y con caché por contenido; el resultado es el mismo.
+  const parse = (code, isModule) => (ctx.heavy ? ctx.heavy.imports(code, isModule) : jsImports(code, isModule));
+  const jsList = [...outputs].filter(([, o]) => o.type === 'js' && !o.copyFrom);
+  const parsed = new Map(await mapLimit(jsList, 64, async ([rel, o]) => [rel, await parse(o.data.toString('utf8'), !!o.module)]));
+
   for (const [rel, o] of outputs) {
     stats.files++;
     const dest = path.join(staging, rel);
@@ -120,11 +114,9 @@ export async function verifyOutput(staging, outputs, ctx) {
       for (const s of model.scripts) {
         if (s.src) check(rel, s.src.value, baseDir);
         if (s.inline && s.kind === 'module') {
-          try {
-            for (const spec of jsImports(s.inline.code, true)) if (/^\.{0,2}\//.test(spec)) check(rel, spec, baseDir);
-          } catch (err) {
-            errors.push(`${rel}: un <script type="module"> inline no es JS válido (${err.message}).`);
-          }
+          const r = jsImports(s.inline.code, true);
+          if (r.error) errors.push(`${rel}: un <script type="module"> inline no es JS válido (${r.error}).`);
+          else for (const spec of r.imports) if (/^\.{0,2}\//.test(spec)) check(rel, spec, baseDir);
         }
       }
       for (const l of model.links) if (l.type === 'stylesheet' || l.type === 'asset' || l.type === 'preload') check(rel, l.href.value, baseDir);
@@ -134,11 +126,9 @@ export async function verifyOutput(staging, outputs, ctx) {
       for (const u of cssRefs(o.data.toString('utf8'))) check(rel, u, dir);
     } else if (o.type === 'js') {
       stats.js++;
-      try {
-        for (const spec of jsImports(o.data.toString('utf8'), !!o.module)) if (/^\.{0,2}\//.test(spec)) check(rel, spec, dir);
-      } catch (err) {
-        errors.push(`${rel}: el JavaScript generado no es válido (${err.message}).`);
-      }
+      const r = parsed.get(rel);
+      if (r.error) errors.push(`${rel}: el JavaScript generado no es válido (${r.error}).`);
+      else for (const spec of r.imports) if (/^\.{0,2}\//.test(spec)) check(rel, spec, dir);
     }
   }
 

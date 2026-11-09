@@ -8,6 +8,11 @@ import { analyze } from '../src/index.js';
 import { analyzeJs } from '../src/jsinfo.js';
 import { sri, listFiles } from '../src/util.js';
 import { verifyOutput } from '../src/verify.js';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const CLI = fileURLToPath(new URL('../bin/builder.js', import.meta.url));
+const cli = (cwd, ...args) => spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
 
 const page = (body, head = '') => `<!doctype html><html><head><meta charset="utf-8">${head}</head><body>${body}</body></html>`;
 const scriptsIn = (html) => [...html.matchAll(/<script[^>]*src="?([^" >]+)/g)].map((m) => m[1]);
@@ -39,6 +44,31 @@ test('compila un proyecto abierto a través de un enlace simbólico (macOS /tmp,
   await buildDir(path.join(via, 'site'));
   assert.ok(exists(real, 'site/dist/js/main.js'));
   assert.ok(exists(real, 'site/dist/js/admin.js'));
+});
+
+test('hilos y caché: la salida es idéntica byte a byte y la caché se reutiliza', async () => {
+  const snapshot = (r) => new Map([...r.outputs].map(([k, o]) => [k, o.copyFrom ? fs.readFileSync(o.copyFrom) : o.data]));
+  const same = (a, b) => {
+    assert.deepEqual([...a.keys()].sort(), [...b.keys()].sort());
+    for (const [k, v] of a) assert.ok(v.equals(b.get(k)), `cambia ${k}`);
+  };
+  const prev = process.env.BUILDER_CACHE_DIR;
+  process.env.BUILDER_CACHE_DIR = tempDir();
+  try {
+    for (const fixture of ['classic', 'modules']) {
+      const opts = { obfuscate: 'medium', js: { minifier: 'terser' } };
+      const serial = snapshot(await buildDir(copyFixture(fixture), { ...opts, workers: 0, cache: false }));
+      const first = await buildDir(copyFixture(fixture), { ...opts, workers: 3, cache: true });
+      same(serial, snapshot(first));
+      assert.ok(first.perf.tasks > 0);
+      const second = await buildDir(copyFixture(fixture), { ...opts, workers: 3, cache: true });
+      same(serial, snapshot(second));
+      assert.equal(second.perf.cacheHits, second.perf.tasks, 'la segunda compilación sale entera de la caché');
+    }
+  } finally {
+    if (prev === undefined) delete process.env.BUILDER_CACHE_DIR;
+    else process.env.BUILDER_CACHE_DIR = prev;
+  }
 });
 
 test('rechaza outDir peligrosos', async () => {
@@ -344,6 +374,172 @@ test('dependencias: se detectan y no se ofuscan; se pueden marcar o corregir a m
   writeFiles(d3, files);
   await buildDir(d3, { obfuscate: 'low', js: { mergeClassic: false }, dependencies: { obfuscate: true } });
   assert.ok(isObfuscated(read(d3, 'dist/vendor/plugin.js')));
+});
+
+test('dependencias: UMD, package.json, data-builder en el HTML y @builder-* en el archivo', async () => {
+  const dir = tempDir();
+  writeFiles(dir, {
+    'package.json': JSON.stringify({ name: 'demo', dependencies: { 'chart.js': '^4.4.0' }, devDependencies: { eslint: '9' } }),
+    'index.html': page(
+      [
+        '<script src="js/umdlib.js"></script>',
+        '<script src="js/chart.umd.js"></script>',
+        '<script src="js/eslint.js"></script>',
+        '<script src="js/plugin.js" data-builder="dependency"></script>',
+        '<script src="js/marcado.js"></script>',
+        '<script src="js/mio.umd.js" data-builder="own"></script>',
+        '<script src="js/propio.js"></script>',
+      ].join(''),
+    ),
+    'js/umdlib.js':
+      '(function (root, factory) { if (typeof define === "function" && define.amd) define([], factory); else root.Umd = factory(); })(this, function () { return { version: 1 }; });',
+    'js/chart.umd.js': 'window.Chart = function Chart() { return 1; };',
+    'js/eslint.js': 'var lintConfig = { reglas: ["a", "b"], activar: function () { return this.reglas.length; } };',
+    'js/plugin.js': 'var Plugin = { iniciar: function () { return "ok"; } };',
+    'js/marcado.js': '/* @builder-dependency */\nvar Marcado = { valor: 1 };',
+    'js/mio.umd.js': 'var miUmd = { calcular: function (a, b) { return a * b + 1; } };',
+    'js/propio.js': '// @builder-own\n/*! Lib v2.0.0 */\nvar propio = { saludo: function () { return "hola " + Marcado.valor; } };',
+  });
+  const r = await buildDir(dir, { obfuscate: 'low', js: { mergeClassic: false } });
+  const reasons = Object.fromEntries(r.dependencies.map((d) => [d.rel, d.reason]));
+  assert.match(reasons['js/umdlib.js'], /UMD/);
+  assert.match(reasons['js/plugin.js'], /data-builder/);
+  assert.match(reasons['js/marcado.js'], /@builder-dependency/);
+  assert.equal(reasons['js/eslint.js'], undefined, 'devDependencies no cuentan');
+  assert.equal(reasons['js/mio.umd.js'], undefined, 'data-builder="own" gana a la detección por nombre');
+  assert.equal(reasons['js/propio.js'], undefined, '@builder-own gana a la cabecera con versión');
+  assert.ok(reasons['js/chart.umd.js'], 'chart.umd.js se detecta (nombre compilado o package.json)');
+  for (const rel of ['js/umdlib.js', 'js/plugin.js', 'js/marcado.js']) assert.ok(!isObfuscated(read(dir, `dist/${rel}`)), `${rel} sin ofuscar`);
+  for (const rel of ['js/eslint.js', 'js/mio.umd.js', 'js/propio.js']) assert.ok(isObfuscated(read(dir, `dist/${rel}`)), `${rel} ofuscado`);
+  // La configuración sigue teniendo la última palabra sobre las marcas.
+  const r2 = await buildDir(dir, { obfuscate: 'low', js: { mergeClassic: false }, dependencies: { exclude: ['js/plugin.js'] } });
+  assert.ok(!r2.dependencies.some((d) => d.rel === 'js/plugin.js'));
+});
+
+test('builder deps: lista y edita builder.config.json sin romper el resto de la configuración', () => {
+  const dir = tempDir();
+  writeFiles(dir, {
+    'index.html': page('<script src="vendor/lib.js"></script><script src="js/app.js"></script>'),
+    'vendor/lib.js': 'var Lib = 1;',
+    'js/app.js': 'var app = Lib + 1;',
+    'builder.config.json': JSON.stringify({ outDir: 'publico', hash: true }),
+  });
+  const list = cli(dir, 'deps', '--json');
+  assert.equal(list.status, 0, list.stderr);
+  const parsed = JSON.parse(list.stdout);
+  assert.deepEqual(
+    parsed.dependencies.map((d) => d.rel),
+    ['vendor/lib.js'],
+  );
+  assert.deepEqual(parsed.own, ['js/app.js']);
+
+  assert.equal(cli(dir, 'deps', 'add', 'js/app.js').status, 0);
+  assert.equal(cli(dir, 'deps', 'own', './vendor/lib.js').status, 0);
+  let cfg = JSON.parse(read(dir, 'builder.config.json'));
+  assert.deepEqual(cfg.dependencies, { include: ['js/app.js'], exclude: ['vendor/lib.js'] });
+  assert.equal(cfg.outDir, 'publico', 'conserva las demás opciones');
+  const after = JSON.parse(cli(dir, 'deps', '--json').stdout);
+  assert.deepEqual(
+    after.dependencies.map((d) => d.rel),
+    ['js/app.js'],
+  );
+
+  assert.equal(cli(dir, 'deps', 'reset', 'js/app.js', 'vendor/lib.js').status, 0);
+  cfg = JSON.parse(read(dir, 'builder.config.json'));
+  assert.deepEqual(cfg.dependencies, { include: [], exclude: [] });
+  // Desde otra carpeta con --dir, y sin patrones da un error claro.
+  assert.equal(cli(path.dirname(dir), 'deps', 'add', 'js/app.js', '--dir', path.basename(dir)).status, 0);
+  const bad = cli(dir, 'deps', 'add');
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr + bad.stdout, /Indica uno o más archivos/);
+});
+
+test('TypeScript: se transpila, sale como .js, el HTML apunta a la salida y el código funciona', async () => {
+  const vm = await import('node:vm');
+  const { pathToFileURL } = await import('node:url');
+  const files = {
+    // spawn.js no existe: es spawn.ts (convención de TypeScript); su salida será justo js/spawn.js.
+    'index.html': page(
+      '<script src="js/legacy.ts"></script><script type="module" src="js/main.ts"></script><script type="module" src="js/spawn.js"></script>',
+    ),
+    'tsconfig.json': '{\n  // comentarios permitidos (JSONC)\n  "compilerOptions": { "target": "ES2022", "strict": true }\n}\n',
+    'js/legacy.ts':
+      'interface Cfg { n: number }\nvar legacyCfg: Cfg = { n: 2 };\nfunction doble(x: number): number { return x * legacyCfg.n; }\nvar legacyResult: number = doble(21);\n',
+    'js/main.ts': [
+      "import { suma } from './math.ts';",
+      "import type { Punto } from './tipos';",
+      "import { Color } from './color.js';",
+      "import { doblar } from './lib';",
+      'const p: Punto = { x: 1, y: 2 };',
+      'export const resultado: number = suma(p.x, p.y) + Color.Verde + doblar(1);',
+      '(globalThis as any).tsResult = resultado;',
+    ].join('\n'),
+    'js/math.ts': 'export function suma(a: number, b: number): number { return a + b; }\n',
+    'js/lib/index.ts': 'export const doblar = (n: number): number => n * 2;\n',
+    'js/tipos.ts': 'export interface Punto { x: number; y: number }\n',
+    'js/color.ts': 'export enum Color { Rojo = 1, Verde = 2 }\n',
+    'js/spawn.ts': "const w: Worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });\nexport { w };\n",
+    'js/worker.ts': 'const n: number = 5;\nself.postMessage(n);\n',
+    'js/types.d.ts': 'declare const algo: number;\n',
+    'js/extra.ts': "export const e: string = 'suelto';\n",
+  };
+  // Por defecto, ofuscado y sin empaquetar (cada módulo en su sitio: los imports deben quedar resolubles).
+  for (const overrides of [{}, { obfuscate: 'low' }, { js: { bundle: false } }]) {
+    const dir = tempDir();
+    writeFiles(dir, files);
+    const r = await buildDir(dir, overrides);
+    assert.deepEqual(r.warnings, [], JSON.stringify(overrides));
+    const out = [...r.outputs.keys()];
+    assert.deepEqual(
+      out.filter((k) => /\.(m|c)?ts$/.test(k)),
+      [],
+      'ningún .ts en la salida',
+    );
+    for (const k of ['js/legacy.js', 'js/main.js', 'js/spawn.js', 'js/worker.js', 'js/extra.js']) assert.ok(r.outputs.has(k), `existe ${k}`);
+    fs.writeFileSync(path.join(dir, 'dist/package.json'), '{"type":"module"}');
+    assert.ok(
+      r.ignored.some((i) => i.rel === 'js/types.d.ts'),
+      '.d.ts excluido',
+    );
+    const html = unquote(read(dir, 'dist/index.html'));
+    assert.ok(!/\.ts["> ]/.test(html), 'el HTML ya no apunta a .ts');
+    assert.match(html, /js\/legacy\.js/);
+    assert.match(read(dir, 'dist/js/spawn.js'), /worker\.js/);
+    assert.doesNotMatch(read(dir, 'dist/js/spawn.js'), /worker\.ts/);
+    // El script clásico mantiene sus globales y calcula lo mismo.
+    const sandbox = {};
+    vm.runInNewContext(read(dir, 'dist/js/legacy.js'), sandbox);
+    assert.equal(sandbox.legacyResult, 42);
+    assert.equal(typeof sandbox.doble, 'function');
+    // El módulo (con imports sin extensión, import type y enum) se ejecuta de verdad.
+    delete globalThis.tsResult;
+    await import(`${pathToFileURL(path.join(dir, 'dist/js/main.js')).href}?v=${Math.random()}`);
+    assert.equal(globalThis.tsResult, 7);
+  }
+});
+
+test('TypeScript inválido: se avisa y no se pierde el archivo', async () => {
+  const dir = tempDir();
+  writeFiles(dir, { 'index.html': page('<script src="js/roto.ts"></script>'), 'js/roto.ts': 'const x: = 1;\n' });
+  const r = await buildDir(dir);
+  assert.ok(r.warnings.some((w) => /TypeScript no válido/.test(w)));
+  assert.ok(exists(dir, 'dist/js/roto.ts'), 'se copia tal cual');
+});
+
+test('dependencias: un archivo con el nombre de un paquete de package.json', async () => {
+  const dir = tempDir();
+  writeFiles(dir, {
+    'package.json': JSON.stringify({ dependencies: { 'chart.js': '4', '@popperjs/core': '2' } }),
+    'index.html': page('<script src="js/chart.js"></script><script src="js/popperjs-2.11.8.js"></script><script src="js/core.js"></script>'),
+    'js/chart.js': 'window.Chart = 1;',
+    'js/popperjs-2.11.8.js': 'window.Popper = 1;',
+    'js/core.js': 'window.core = 1;',
+  });
+  const r = await buildDir(dir, { obfuscate: 'low', js: { mergeClassic: false } });
+  const reasons = Object.fromEntries(r.dependencies.map((d) => [d.rel, d.reason]));
+  assert.match(reasons['js/chart.js'], /"chart\.js" de tu package\.json/);
+  assert.match(reasons['js/popperjs-2.11.8.js'], /"@popperjs\/core"/);
+  assert.equal(reasons['js/core.js'], undefined, 'nombres genéricos no bastan');
 });
 
 test('paquetes de npm: van a un archivo vendor sin ofuscar y comparten estado', async () => {
