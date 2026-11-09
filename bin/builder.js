@@ -63,6 +63,7 @@ Opciones de build:
   --json                   Resultado en JSON (para CI)
   --verbose                Muestra notas, archivos copiados y excluidos
   --quiet                  Solo errores
+  --budget <patrón=tamaño> Presupuesto de tamaño, ej. "total=1MB gzip" o "js/*.js=50KB" (repetible)
   --images                 Optimiza PNG (sin pérdida) y JPEG/WebP (calidad 80) con sharp
   --image-quality <1-100>  Calidad de JPEG/WebP con --images (por defecto 80)
   --browsers <consulta>    Navegadores objetivo (browserslist), ej. "> 0.5%, not dead"; --no-browsers los ignora
@@ -113,6 +114,7 @@ Build options:
   --json                   JSON result (for CI)
   --verbose                Show notes, copied and excluded files
   --quiet                  Errors only
+  --budget <pattern=size>  Size budget, e.g. "total=1MB gzip" or "js/*.js=50KB" (repeatable)
   --images                 Optimize PNG (lossless) and JPEG/WebP (quality 80) with sharp
   --image-quality <1-100>  JPEG/WebP quality with --images (default 80)
   --browsers <query>       Target browsers (browserslist), e.g. "> 0.5%, not dead"; --no-browsers ignores them
@@ -120,8 +122,33 @@ Build options:
 `,
   );
 
+// Opciones sin valor, y las que admiten la forma --no-x.
+const BOOLEAN = new Set([
+  'help',
+  'version',
+  'json',
+  'verbose',
+  'quiet',
+  'force',
+  'keep-failed',
+  'open',
+  'hash',
+  'obfuscate-deps',
+  'drop-console',
+  'images',
+]);
+const NEGATABLE = new Set(['verify', 'minify', 'merge', 'cache', 'detect-deps', 'browsers', 'hash', 'images']);
+
+function distance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++)
+    for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[a.length][b.length];
+}
+
 function parseArgs(argv) {
-  const args = { _: [], entry: [], include: [], ignore: [], dep: [], 'not-dep': [] };
+  const args = { _: [], entry: [], include: [], ignore: [], dep: [], 'not-dep': [], budget: [] };
   const takesValue = new Set([
     'out',
     'config',
@@ -141,6 +168,7 @@ function parseArgs(argv) {
     'lang',
     'browsers',
     'image-quality',
+    'budget',
   ]);
   const optionalValue = { obfuscate: ['low', 'medium', 'high', 'max'], sourcemap: ['linked', 'hidden', 'inline'], compress: ['gzip', 'brotli'] };
   for (let i = 0; i < argv.length; i++) {
@@ -150,6 +178,17 @@ function parseArgs(argv) {
       continue;
     }
     let [key, val] = a.slice(2).split(/=(.*)/s);
+    const bare = key.startsWith('no-') && NEGATABLE.has(key.slice(3)) ? key.slice(3) : key;
+    if (!takesValue.has(key) && !optionalValue[key] && !BOOLEAN.has(key) && !(bare !== key && NEGATABLE.has(bare))) {
+      const known = [...takesValue, ...Object.keys(optionalValue), ...BOOLEAN, ...[...NEGATABLE].map((k) => `no-${k}`)];
+      const near = known.map((k) => [k, distance(key, k)]).sort((x, y) => x[1] - y[1])[0];
+      throw new BuildError(
+        L(`Opción desconocida --${key}.`, `Unknown option --${key}.`) +
+          (near && near[1] <= 3
+            ? L(` ¿Quisiste decir --${near[0]}?`, ` Did you mean --${near[0]}?`)
+            : L(' Usa "builder help".', ' Use "builder help".')),
+      );
+    }
     if (takesValue.has(key)) {
       if (val === undefined) val = argv[++i];
       if (val === undefined) throw new BuildError(L(`Falta el valor de --${key}.`, `Missing value for --${key}.`));
@@ -184,6 +223,18 @@ function overridesFrom(args) {
       throw new BuildError(L('--image-quality debe ser un número entre 1 y 100.', '--image-quality must be a number between 1 and 100.'));
     o.images = { quality: q };
   } else if (args.images !== undefined) o.images = !!args.images;
+  if (args.budget.length) {
+    // --budget "patrón=tamaño" (repetible): sustituye a los presupuestos de la configuración.
+    o.budgets = {};
+    for (const b of args.budget) {
+      const at = b.lastIndexOf('=');
+      if (at < 1)
+        throw new BuildError(
+          L(`--budget necesita la forma patrón=tamaño, ej. "js/*.js=50KB": ${b}`, `--budget needs the form pattern=size, e.g. "js/*.js=50KB": ${b}`),
+        );
+      o.budgets[b.slice(0, at)] = b.slice(at + 1);
+    }
+  }
   if (args.browsers === false) o.browsers = false;
   else if (typeof args.browsers === 'string') o.browsers = args.browsers;
   if (args.workers !== undefined) {

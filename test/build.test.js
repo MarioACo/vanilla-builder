@@ -698,7 +698,7 @@ test('presupuestos: un exceso detiene la compilación sin tocar dist/; analyze s
   await assert.rejects(
     buildDir(dir, { budgets: { 'js/*.js': '2 KB', 'js/nada/*.js': '1 KB' } }),
     (err) =>
-      /superan su presupuesto/.test(err.message) &&
+      /presupuesto\(s\) de tamaño/.test(err.message) &&
       err.details.some((d) => d.startsWith('js/grande.js')) &&
       !err.details.some((d) => d.startsWith('js/chico.js')),
   );
@@ -757,6 +757,19 @@ test('plugins: transform sobre el fuente (con SRI coherente), buildStart/buildEn
   await assert.rejects(buildDir(bad), /plugin "roto" falló en transform \(index\.html\): ups/);
   writeFiles(bad, { 'builder.config.mjs': 'export default { plugins: [{ name: "raro", onLoad() {} }] };' });
   await assert.rejects(buildDir(bad), (err) => err.details.some((d) => /no es un gancho conocido/.test(d)));
+});
+
+test('CLI: opciones desconocidas con sugerencia, --no-x y --budget', () => {
+  const dir = copyFixture('modules');
+  const typo = cli(dir, 'build', '--obfusacte');
+  assert.equal(typo.status, 1);
+  assert.match(typo.stderr, /Opción desconocida --obfusacte\. ¿Quisiste decir --obfuscate\?/);
+  assert.equal(cli(dir, 'build', '--no-cache', '--no-browsers', '--quiet').status, 0);
+  const over = cli(dir, 'build', '--budget=total=10B', '--json');
+  assert.equal(over.status, 1);
+  assert.match(JSON.parse(over.stdout).details[0], /^total: .* supera el presupuesto de 10 B/);
+  assert.equal(cli(dir, 'build', '--budget', 'total=1MB gzip', '--quiet').status, 0);
+  assert.equal(cli(dir, 'build', '--budget', 'sin-igual').status, 1);
 });
 
 test('dependencias: un archivo con el nombre de un paquete de package.json', async () => {

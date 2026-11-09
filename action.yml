@@ -1,0 +1,91 @@
+name: vanilla-builder
+description: Build, verify and size-check a vanilla HTML/CSS/JS site, with a size report on the run and on pull requests.
+author: MarioACo
+branding:
+  icon: package
+  color: green
+
+inputs:
+  directory:
+    description: Project folder to build.
+    default: .
+  args:
+    description: Extra build options, e.g. "--obfuscate --hash --compress".
+    default: ''
+  version:
+    description: vanilla-builder version to use when the project does not install it (npm version or tag, or a local path to a checkout).
+    default: latest
+  node-version:
+    description: Node.js version to set up. Use "none" if your workflow already sets up Node.
+    default: '22'
+  cache:
+    description: Keep the build cache between runs (much faster rebuilds).
+    default: 'true'
+  comment:
+    description: On pull requests, post (and keep updating) a comment with the size report.
+    default: 'false'
+  github-token:
+    description: Token used to comment on pull requests (needs pull-requests write permission).
+    default: ${{ github.token }}
+
+outputs:
+  total-size:
+    description: Total output size in bytes.
+    value: ${{ steps.summary.outputs.total-size }}
+  total-gzip:
+    description: Total output size in bytes, gzipped.
+    value: ${{ steps.summary.outputs.total-gzip }}
+  report:
+    description: Path to the full JSON report.
+    value: ${{ steps.build.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.node-version != 'none'
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - if: inputs.cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/vanilla-builder-cache
+        key: vanilla-builder-${{ runner.os }}-${{ github.sha }}
+        restore-keys: vanilla-builder-${{ runner.os }}-
+
+    - id: build
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      env:
+        BUILDER_CACHE_DIR: ${{ runner.temp }}/vanilla-builder-cache
+        BUILDER_LANG: en
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        report="$RUNNER_TEMP/vanilla-builder-report.json"
+        echo "report=$report" >> "$GITHUB_OUTPUT"
+        # The project's own install wins; otherwise the requested version from npm.
+        if [ -f "$INPUT_VERSION/bin/builder.js" ]; then cmd=(node "$INPUT_VERSION/bin/builder.js");
+        elif [ -x node_modules/.bin/builder ]; then cmd=(node_modules/.bin/builder);
+        else cmd=(npx --yes "vanilla-builder@$INPUT_VERSION"); fi
+        set +e
+        # shellcheck disable=SC2086
+        "${cmd[@]}" build --json $INPUT_ARGS > "$report"
+        code=$?
+        set -e
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+    - id: summary
+      shell: bash
+      env:
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_TOKEN: ${{ inputs.github-token }}
+        INPUT_DIRECTORY: ${{ inputs.directory }}
+      run: node "$GITHUB_ACTION_PATH/action/summary.mjs" "${{ steps.build.outputs.report }}"
+
+    - if: steps.build.outputs.exit-code != '0'
+      shell: bash
+      run: |
+        echo "::error title=vanilla-builder::The build failed (see the summary above)."
+        exit 1

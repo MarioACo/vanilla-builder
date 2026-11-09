@@ -1255,8 +1255,8 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
   if (budgets.violations.length)
     throw new BuildError(
       L(
-        `${budgets.violations.length} archivo(s) superan su presupuesto de tamaño; no se tocó ${cfg.outDir}.`,
-        `${budgets.violations.length} file(s) exceed their size budget; ${cfg.outDir} was not touched.`,
+        `Se superaron ${budgets.violations.length} presupuesto(s) de tamaño; no se tocó ${cfg.outDir}.`,
+        `${budgets.violations.length} size budget(s) exceeded; ${cfg.outDir} was not touched.`,
       ),
       budgets.violations,
     );

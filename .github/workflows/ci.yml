@@ -70,3 +70,38 @@ jobs:
           BUILDER_CHROMIUM: /usr/bin/google-chrome
           BUILDER_NODE: ${{ env.NODE16 }}
           BUILDER_NODE_LABEL: Node 16
+
+  action:
+    # La GitHub Action del repo, con el código actual (no la versión de npm).
+    name: GitHub Action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - id: ok
+        uses: ./
+        with:
+          directory: test/fixtures/classic
+          version: ${{ github.workspace }}
+          node-version: none
+          args: --hash --compress
+      - name: Comprobar salidas
+        run: |
+          test -n "${{ steps.ok.outputs.total-size }}"
+          test -f test/fixtures/classic/dist/index.html
+      - id: over
+        continue-on-error: true
+        uses: ./
+        with:
+          directory: test/fixtures/modules
+          version: ${{ github.workspace }}
+          node-version: none
+          cache: 'false'
+          args: --budget=total=10B
+      - name: Un presupuesto superado debe fallar
+        if: steps.over.outcome != 'failure'
+        run: exit 1
