@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BuildError } from './util.js';
+import { L } from './i18n.js';
 
 export const CONFIG_FILES = ['builder.config.json', 'builder.config.mjs', 'builder.config.js'];
 
@@ -68,13 +69,19 @@ function levenshtein(a, b) {
 
 function suggest(key, options) {
   const best = options.map((o) => [o, levenshtein(key, o)]).sort((x, y) => x[1] - y[1])[0];
-  return best && best[1] <= 3 ? ` ¿Quisiste decir "${best[0]}"?` : '';
+  return best && best[1] <= 3 ? L(` ¿Quisiste decir "${best[0]}"?`, ` Did you mean "${best[0]}"?`) : '';
 }
 
 function checkKeys(obj, defaults, prefix, errors) {
   for (const key of Object.keys(obj)) {
     if (key === '$schema') continue;
-    if (!(key in defaults)) errors.push(`Opción desconocida "${prefix}${key}".${suggest(key, Object.keys(defaults))}`);
+    if (!(key in defaults))
+      errors.push(
+        L(
+          `Opción desconocida "${prefix}${key}".${suggest(key, Object.keys(defaults))}`,
+          `Unknown option "${prefix}${key}".${suggest(key, Object.keys(defaults))}`,
+        ),
+      );
   }
 }
 
@@ -82,7 +89,8 @@ const asList = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
 
 export function normalizeConfig(raw, errors = []) {
   const user = raw ?? {};
-  if (typeof user !== 'object' || Array.isArray(user)) throw new BuildError('La configuración debe ser un objeto JSON.');
+  if (typeof user !== 'object' || Array.isArray(user))
+    throw new BuildError(L('La configuración debe ser un objeto JSON.', 'The configuration must be a JSON object.'));
   checkKeys(user, DEFAULTS, '', errors);
   const cfg = { ...DEFAULTS, ...user };
   for (const k of NESTED) {
@@ -92,47 +100,71 @@ export function normalizeConfig(raw, errors = []) {
     else if (typeof v === 'object') {
       checkKeys(v, DEFAULTS[k], `${k}.`, errors);
       cfg[k] = { ...DEFAULTS[k], ...v };
-    } else errors.push(`"${k}" debe ser un objeto o true/false.`);
+    } else errors.push(L(`"${k}" debe ser un objeto o true/false.`, `"${k}" must be an object or true/false.`));
   }
   for (const k of ['include', 'ignore']) {
     cfg[k] = asList(cfg[k]);
-    if (cfg[k].some((x) => typeof x !== 'string')) errors.push(`"${k}" debe ser una lista de rutas o patrones (texto).`);
+    if (cfg[k].some((x) => typeof x !== 'string'))
+      errors.push(L(`"${k}" debe ser una lista de rutas o patrones (texto).`, `"${k}" must be a list of paths or patterns (text).`));
   }
   for (const k of ['include', 'exclude']) {
     cfg.dependencies[k] = asList(cfg.dependencies[k]);
-    if (cfg.dependencies[k].some((x) => typeof x !== 'string')) errors.push(`"dependencies.${k}" debe ser una lista de rutas o patrones (texto).`);
+    if (cfg.dependencies[k].some((x) => typeof x !== 'string'))
+      errors.push(
+        L(`"dependencies.${k}" debe ser una lista de rutas o patrones (texto).`, `"dependencies.${k}" must be a list of paths or patterns (text).`),
+      );
   }
-  for (const k of ['detect', 'obfuscate']) if (typeof cfg.dependencies[k] !== 'boolean') errors.push(`"dependencies.${k}" debe ser true o false.`);
+  for (const k of ['detect', 'obfuscate'])
+    if (typeof cfg.dependencies[k] !== 'boolean')
+      errors.push(L(`"dependencies.${k}" debe ser true o false.`, `"dependencies.${k}" must be true or false.`));
   if (cfg.entries !== 'auto') {
     cfg.entries = asList(cfg.entries);
     if (!cfg.entries.length || cfg.entries.some((x) => typeof x !== 'string'))
-      errors.push('"entries" debe ser "auto" o una lista de archivos/patrones.');
+      errors.push(L('"entries" debe ser "auto" o una lista de archivos/patrones.', '"entries" must be "auto" or a list of files/patterns.'));
   }
   for (const [key, allowed] of Object.entries(ENUMS)) {
     const [a, b] = key.split('.');
     const value = b ? cfg[a][b] : cfg[a];
-    if (!allowed.includes(value)) errors.push(`"${key}" debe ser uno de: ${allowed.map((x) => JSON.stringify(x)).join(', ')}.`);
+    if (!allowed.includes(value))
+      errors.push(
+        L(
+          `"${key}" debe ser uno de: ${allowed.map((x) => JSON.stringify(x)).join(', ')}.`,
+          `"${key}" must be one of: ${allowed.map((x) => JSON.stringify(x)).join(', ')}.`,
+        ),
+      );
   }
-  if (typeof cfg.outDir !== 'string' || !cfg.outDir.trim()) errors.push('"outDir" debe ser una ruta.');
-  if (typeof cfg.base !== 'string' || !cfg.base.startsWith('/')) errors.push('"base" debe empezar con "/" (ej. "/" o "/mi-sitio/").');
+  if (typeof cfg.outDir !== 'string' || !cfg.outDir.trim()) errors.push(L('"outDir" debe ser una ruta.', '"outDir" must be a path.'));
+  if (typeof cfg.base !== 'string' || !cfg.base.startsWith('/'))
+    errors.push(L('"base" debe empezar con "/" (ej. "/" o "/mi-sitio/").', '"base" must start with "/" (e.g. "/" or "/my-site/").'));
   else if (!cfg.base.endsWith('/')) cfg.base += '/';
-  if (typeof cfg.hash !== 'boolean') errors.push('"hash" debe ser true o false.');
-  if (typeof cfg.cache !== 'boolean') errors.push('"cache" debe ser true o false.');
+  if (typeof cfg.hash !== 'boolean') errors.push(L('"hash" debe ser true o false.', '"hash" must be true or false.'));
+  if (typeof cfg.cache !== 'boolean') errors.push(L('"cache" debe ser true o false.', '"cache" must be true or false.'));
   if (!(cfg.workers === 'auto' || (Number.isInteger(cfg.workers) && cfg.workers >= 0 && cfg.workers <= 64)))
-    errors.push('"workers" debe ser "auto" o un número entre 0 y 64.');
+    errors.push(L('"workers" debe ser "auto" o un número entre 0 y 64.', '"workers" must be "auto" or a number between 0 and 64.'));
   cfg.js.drop = asList(cfg.js.drop);
-  if (cfg.js.drop.some((d) => !['console', 'debugger'].includes(d))) errors.push('"js.drop" solo admite "console" y "debugger".');
+  if (cfg.js.drop.some((d) => !['console', 'debugger'].includes(d)))
+    errors.push(L('"js.drop" solo admite "console" y "debugger".', '"js.drop" only accepts "console" and "debugger".'));
   if (typeof cfg.js.chunkDir !== 'string' || /(^|\/)\.\.(\/|$)|^\//.test(cfg.js.chunkDir))
-    errors.push('"js.chunkDir" debe ser una carpeta relativa.');
+    errors.push(L('"js.chunkDir" debe ser una carpeta relativa.', '"js.chunkDir" must be a relative folder.'));
   for (const k of ['css', 'js']) {
     const t = cfg[k].target;
     if (!(typeof t === 'string' || (Array.isArray(t) && t.every((x) => typeof x === 'string'))))
-      errors.push(`"${k}.target" debe ser texto o lista (ej. "es2020" o ["chrome90","safari15"]).`);
+      errors.push(
+        L(
+          `"${k}.target" debe ser texto o lista (ej. "es2020" o ["chrome90","safari15"]).`,
+          `"${k}.target" must be text or a list (e.g. "es2020" or ["chrome90","safari15"]).`,
+        ),
+      );
   }
   const o = cfg.obfuscate;
   if (o === true) cfg.obfuscate = 'medium';
   else if (!(o === false || OBF_PRESETS.includes(o) || (o && typeof o === 'object' && !Array.isArray(o))))
-    errors.push(`"obfuscate" debe ser false, true, ${OBF_PRESETS.map((p) => `"${p}"`).join(', ')} o un objeto de opciones de javascript-obfuscator.`);
+    errors.push(
+      L(
+        `"obfuscate" debe ser false, true, ${OBF_PRESETS.map((p) => `"${p}"`).join(', ')} o un objeto de opciones de javascript-obfuscator.`,
+        `"obfuscate" must be false, true, ${OBF_PRESETS.map((p) => `"${p}"`).join(', ')} or an object of javascript-obfuscator options.`,
+      ),
+    );
   return cfg;
 }
 
@@ -142,7 +174,12 @@ async function readConfigFile(file) {
     try {
       return JSON.parse(text);
     } catch (err) {
-      throw new BuildError(`No pude leer ${path.basename(file)}: JSON inválido (${err.message}).`);
+      throw new BuildError(
+        L(
+          `No pude leer ${path.basename(file)}: JSON inválido (${err.message}).`,
+          `Could not read ${path.basename(file)}: invalid JSON (${err.message}).`,
+        ),
+      );
     }
   }
   const mod = await import(`${pathToFileURL(file).href}?t=${fs.statSync(file).mtimeMs}`);
@@ -163,17 +200,19 @@ export function findConfigFile(dir) {
  */
 export async function loadConfig({ dir = '.', config, overrides = {}, cwd = process.cwd() } = {}) {
   const projectDir = path.resolve(cwd, dir);
-  if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory()) throw new BuildError(`La carpeta del proyecto no existe: ${projectDir}`);
+  if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory())
+    throw new BuildError(L(`La carpeta del proyecto no existe: ${projectDir}`, `The project folder does not exist: ${projectDir}`));
   const configFile = config ? path.resolve(cwd, config) : findConfigFile(projectDir);
-  if (config && !fs.existsSync(configFile)) throw new BuildError(`No existe el archivo de configuración: ${configFile}`);
+  if (config && !fs.existsSync(configFile))
+    throw new BuildError(L(`No existe el archivo de configuración: ${configFile}`, `The configuration file does not exist: ${configFile}`));
   const fileCfg = configFile ? await readConfigFile(configFile) : {};
   const merged = mergeOverrides(fileCfg ?? {}, overrides);
   const errors = [];
   const cfg = normalizeConfig(merged, errors);
-  if (errors.length) throw new BuildError('La configuración tiene errores:', errors);
+  if (errors.length) throw new BuildError(L('La configuración tiene errores:', 'The configuration has errors:'), errors);
   const baseDir = configFile ? path.dirname(configFile) : projectDir;
   cfg.root = path.resolve(baseDir, cfg.root);
-  if (!fs.existsSync(cfg.root)) throw new BuildError(`"root" no existe: ${cfg.root}`);
+  if (!fs.existsSync(cfg.root)) throw new BuildError(L(`"root" no existe: ${cfg.root}`, `"root" does not exist: ${cfg.root}`));
   // esbuild resuelve los enlaces simbólicos de lo que importa; si la raíz no es la ruta real, el mismo
   // módulo aparece con dos rutas (pasa en macOS con /tmp → /private/tmp, o al abrir el proyecto por un enlace).
   cfg.root = fs.realpathSync(cfg.root);

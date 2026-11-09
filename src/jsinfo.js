@@ -1,6 +1,7 @@
 // Análisis estático de JavaScript con acorn: nivel de sintaxis, globales, workers y rutas.
 import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
+import { L } from './i18n.js';
 
 const VERSIONS = [5, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026];
 const LATEST = 'latest';
@@ -259,7 +260,7 @@ export function compareGlobals(before, afterCode, allowPrefix = null) {
   try {
     ast = parse(afterCode, 'script', LATEST);
   } catch (err) {
-    return { ok: false, reason: `el resultado no es JS válido (${err.message})` };
+    return { ok: false, reason: L(`el resultado no es JS válido (${err.message})`, `the result is not valid JS (${err.message})`) };
   }
   const after = {
     top: globalBindings(
@@ -268,12 +269,25 @@ export function compareGlobals(before, afterCode, allowPrefix = null) {
     ),
   };
   for (const [name, kind] of before) {
-    if (!after.top.has(name)) return { ok: false, reason: `desaparece la global "${name}"` };
-    if (after.top.get(name) !== kind) return { ok: false, reason: `la global "${name}" cambia de tipo (${kind} → ${after.top.get(name)})` };
+    if (!after.top.has(name)) return { ok: false, reason: L(`desaparece la global "${name}"`, `the global "${name}" disappears`) };
+    if (after.top.get(name) !== kind)
+      return {
+        ok: false,
+        reason: L(
+          `la global "${name}" cambia de tipo (${kind} → ${after.top.get(name)})`,
+          `the global "${name}" changes kind (${kind} → ${after.top.get(name)})`,
+        ),
+      };
   }
   for (const name of after.top.keys()) {
     if (!before.has(name) && !(allowPrefix && name.startsWith(allowPrefix)))
-      return { ok: false, reason: `aparece una global nueva "${name}" que podría chocar con otros scripts` };
+      return {
+        ok: false,
+        reason: L(
+          `aparece una global nueva "${name}" que podría chocar con otros scripts`,
+          `a new global "${name}" appears that could clash with other scripts`,
+        ),
+      };
   }
   return { ok: true };
 }

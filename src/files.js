@@ -4,6 +4,7 @@ import path from 'node:path';
 import picomatch from 'picomatch';
 import { CONFIG_FILES } from './config.js';
 import { relFrom, toPosix, extOf } from './util.js';
+import { L } from './i18n.js';
 
 /** Archivos de desarrollo que nunca deberían publicarse. Se desactiva con defaultIgnore:false. */
 export const DEFAULT_IGNORE = [
@@ -85,7 +86,7 @@ export function scanProject(cfg) {
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch (err) {
-      ignored.push({ rel: relFrom(root, dir) || '.', reason: `no se pudo leer (${err.code})` });
+      ignored.push({ rel: relFrom(root, dir) || '.', reason: L(`no se pudo leer (${err.code})`, `could not be read (${err.code})`) });
       return;
     }
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -100,9 +101,10 @@ export function scanProject(cfg) {
           const st = fs.statSync(abs);
           isFile = st.isFile();
           isDir = false;
-          if (st.isDirectory()) ignored.push({ rel, reason: 'enlace simbólico a carpeta (no se sigue)' });
+          if (st.isDirectory())
+            ignored.push({ rel, reason: L('enlace simbólico a carpeta (no se sigue)', 'symbolic link to a folder (not followed)') });
         } catch {
-          ignored.push({ rel, reason: 'enlace simbólico roto' });
+          ignored.push({ rel, reason: L('enlace simbólico roto', 'broken symbolic link') });
           continue;
         }
       }
@@ -113,7 +115,10 @@ export function scanProject(cfg) {
         const byUser = isUser(rel) || isUser(probe);
         const wanted = cfg.include.some((p) => normalizePattern(p).startsWith(`${rel}/`) || p.startsWith('**'));
         if ((byUser || isDefault(probe)) && !wanted) {
-          ignored.push({ rel: `${rel}/`, reason: byUser ? 'ignore (configuración)' : 'excluido por defecto' });
+          ignored.push({
+            rel: `${rel}/`,
+            reason: byUser ? L('ignore (configuración)', 'ignore (configuration)') : L('excluido por defecto', 'excluded by default'),
+          });
           continue;
         }
         walk(abs);
@@ -123,9 +128,9 @@ export function scanProject(cfg) {
       const forced = isIncluded(rel);
       let reason = null;
       if (!forced) {
-        if (isSecret(rel)) reason = 'posible secreto (excluido por seguridad)';
-        else if (isUser(rel)) reason = 'ignore (configuración)';
-        else if (isDefault(rel)) reason = 'excluido por defecto';
+        if (isSecret(rel)) reason = L('posible secreto (excluido por seguridad)', 'possible secret (excluded for safety)');
+        else if (isUser(rel)) reason = L('ignore (configuración)', 'ignore (configuration)');
+        else if (isDefault(rel)) reason = L('excluido por defecto', 'excluded by default');
       }
       if (reason) {
         ignored.push({ rel, reason });

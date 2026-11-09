@@ -6,6 +6,11 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { build } from '../src/index.js';
 import { startServer } from '../src/server.js';
+import { setLang } from '../src/i18n.js';
+
+// Las pruebas comprueban los mensajes en español; los procesos hijos (CLI) heredan BUILDER_LANG.
+setLang('es');
+process.env.BUILDER_LANG = 'es';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.join(HERE, 'fixtures');

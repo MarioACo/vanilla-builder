@@ -10,6 +10,7 @@ import { replaceWithMap } from './sourcemap.js';
 import { relFrom, toPosix, BuildError, rootPrefix, hasOwn, shortHash, jsOutPath } from './util.js';
 import { classifyUrl } from './urls.js';
 import { formatMessage, esbuildErrorText } from './css.js';
+import { L } from './i18n.js';
 
 /** Marcador de "raíz de salida" que se sustituye por la ruta relativa real de cada archivo generado. */
 export const MARK = '__VB_ROOT__';
@@ -57,9 +58,9 @@ export async function processClassic(ctx, { code, id, info, obfuscate, sourcemap
   let map = null;
   if (js.minify) {
     const auto = await targetForLevel(info.level);
-    const attempts = [{ target: js.target === 'auto' ? auto : js.target, keepNames: js.keepNames, label: 'completa' }];
-    if (js.target !== 'auto' || js.keepNames) attempts.push({ target: auto, keepNames: false, label: 'sin transpilar' });
-    attempts.push({ target: auto, keepNames: false, whitespace: true, label: 'solo espacios' });
+    const attempts = [{ target: js.target === 'auto' ? auto : js.target, keepNames: js.keepNames, label: L('completa', 'full') }];
+    if (js.target !== 'auto' || js.keepNames) attempts.push({ target: auto, keepNames: false, label: L('sin transpilar', 'without transpiling') });
+    attempts.push({ target: auto, keepNames: false, whitespace: true, label: L('solo espacios', 'whitespace only') });
     let done = false;
     for (const a of attempts) {
       try {
@@ -84,19 +85,19 @@ export async function processClassic(ctx, { code, id, info, obfuscate, sourcemap
           done = true;
           break;
         }
-        notes.push(`minificación ${a.label} descartada: ${cmp.reason}`);
+        notes.push(L(`minificación ${a.label} descartada: ${cmp.reason}`, `${a.label} minification discarded: ${cmp.reason}`));
       } catch (err) {
-        notes.push(`minificación ${a.label} falló: ${firstLine(err)}`);
+        notes.push(L(`minificación ${a.label} falló: ${firstLine(err)}`, `${a.label} minification failed: ${firstLine(err)}`));
       }
     }
-    if (!done) notes.push('se deja sin minificar para no romperlo');
+    if (!done) notes.push(L('se deja sin minificar para no romperlo', 'left unminified so it does not break'));
   }
   if (obfuscate) {
     const o = await ctx.heavy.obfuscate(out, { isModule: false, options: ctx.obfuscatorOptions, id, globals: info.top });
     if (o.code) {
       out = o.code;
       map = null;
-    } else notes.push(`no se ofuscó: ${o.reason}`);
+    } else notes.push(L(`no se ofuscó: ${o.reason}`, `not obfuscated: ${o.reason}`));
   } else if (out !== code) {
     const t = await terserPass(ctx, out, { isModule: false, level: info.level, globals: info.top });
     if (t !== out) {
@@ -133,7 +134,7 @@ export async function processModuleStandalone(ctx, { code, id, info, obfuscate, 
       out = r.code;
       map = r.map || null;
     } catch (err) {
-      notes.push(`no se pudo minificar: ${firstLine(err)}`);
+      notes.push(L(`no se pudo minificar: ${firstLine(err)}`, `could not minify: ${firstLine(err)}`));
     }
   }
   if (obfuscate) {
@@ -141,7 +142,7 @@ export async function processModuleStandalone(ctx, { code, id, info, obfuscate, 
     if (o.code) {
       out = o.code;
       map = null;
-    } else notes.push(`no se ofuscó: ${o.reason}`);
+    } else notes.push(L(`no se ofuscó: ${o.reason}`, `not obfuscated: ${o.reason}`));
   } else if (out !== code) {
     const t = await terserPass(ctx, out, { isModule: true, level: info.level });
     if (t !== out) {
@@ -155,7 +156,7 @@ export async function processModuleStandalone(ctx, { code, id, info, obfuscate, 
 /** Ofusca un módulo ya generado (paquete, chunk o worker). */
 export async function obfuscateModule(ctx, code, id) {
   const o = await ctx.heavy.obfuscate(code, { isModule: true, options: ctx.obfuscatorOptions, id });
-  return o.code ? { code: o.code } : { code, note: `no se ofuscó: ${o.reason}` };
+  return o.code ? { code: o.code } : { code, note: L(`no se ofuscó: ${o.reason}`, `not obfuscated: ${o.reason}`) };
 }
 
 /** Aplica un import map (solo "imports"; con "scopes" se usa el modo sin empaquetar). */
@@ -219,8 +220,10 @@ function modulePlugin(ctx, group, state) {
     if (!info.ok) return code;
     state.levels.push(info.level ?? 9999);
     if (!local) return code;
-    for (const u of info.unsafeUrls) state.unsafe.push(`new URL(variable, import.meta.url) en ${id}: ${u}`);
-    for (const u of info.unsafeImports) state.unsafe.push(`import() con una ruta calculada en ${id}: ${u}`);
+    for (const u of info.unsafeUrls)
+      state.unsafe.push(L(`new URL(variable, import.meta.url) en ${id}: ${u}`, `new URL(variable, import.meta.url) in ${id}: ${u}`));
+    for (const u of info.unsafeImports)
+      state.unsafe.push(L(`import() con una ruta calculada en ${id}: ${u}`, `import() with a computed path in ${id}: ${u}`));
     if (state.mode === 'scan') ctx.noteJsInfo(id, info, baseDir, { module: true });
     if (!info.urls.length) return code;
     let out = '';
@@ -287,18 +290,30 @@ function modulePlugin(ctx, group, state) {
             ctx.reportBroken(importer, spec, r);
             return { path: spec, external: true };
           }
-          ctx.requireStandalone(r.rel, `importado como CSS desde ${importer}`);
+          ctx.requireStandalone(r.rel, L(`importado como CSS desde ${importer}`, `imported as CSS from ${importer}`));
           return { path: `${MARK}/${r.rel}`, external: true };
         }
         const mapped = mapSpecifier(ctx, group.importMap, spec, baseDir);
         if (mapped?.external) return { path: spec, external: true };
         if (mapped?.rel) return { path: ctx.abs(mapped.rel) };
         if (mapped?.abs) return { path: mapped.abs };
-        if (mapped?.broken) return { errors: [{ text: `El import map de la página apunta "${spec}" a "${mapped.target}", que no existe.` }] };
+        if (mapped?.broken)
+          return {
+            errors: [
+              {
+                text: L(
+                  `El import map de la página apunta "${spec}" a "${mapped.target}", que no existe.`,
+                  `The page import map points "${spec}" to "${mapped.target}", which does not exist.`,
+                ),
+              },
+            ],
+          };
         if (spec.startsWith('/')) {
           const r = ctx.resolve(spec, baseDir);
           if (r.status === 'ok') return { path: ctx.abs(r.rel) };
-          return { errors: [{ text: `No existe "${spec}" (importado desde ${importer}).` }] };
+          return {
+            errors: [{ text: L(`No existe "${spec}" (importado desde ${importer}).`, `"${spec}" does not exist (imported from ${importer}).`) }],
+          };
         }
         return undefined;
       };
@@ -324,7 +339,11 @@ let terser = null;
 
 /** Carga terser (opcional) para la compresión máxima. */
 export async function ensureTerser(projectRoot) {
-  terser = await importOptional('terser', projectRoot, 'para la compresión máxima (js.minifier: "terser")');
+  terser = await importOptional(
+    'terser',
+    projectRoot,
+    L('para la compresión máxima (js.minifier: "terser")', 'for maximum compression (js.minifier: "terser")'),
+  );
 }
 
 /**
@@ -462,16 +481,23 @@ export async function buildModuleGroup(ctx, group) {
   try {
     scan = await esbuild.build({ ...common, target: 'esnext', plugins: [modulePlugin(ctx, group, scanState)] });
   } catch (err) {
-    throw new BuildError('No se pudieron empaquetar los módulos JavaScript:', esbuildErrorText(err, ctx.root).split('\n'));
+    throw new BuildError(
+      L('No se pudieron empaquetar los módulos JavaScript:', 'Could not bundle the JavaScript modules:'),
+      esbuildErrorText(err, ctx.root).split('\n'),
+    );
   }
   const inputs = Object.keys(scan.metafile.inputs)
     .map((p) => relFrom(ctx.root, path.resolve(ctx.root, p)))
     .filter((rel) => rel && ctx.files.has(rel));
   const dynamicWarnings = scan.warnings.filter((w) => w.id === 'unsupported-dynamic-import');
   let reason = null;
-  if (!cfg.js.bundle) reason = 'js.bundle está desactivado';
+  if (!cfg.js.bundle) reason = L('js.bundle está desactivado', 'js.bundle is disabled');
   else if (group.forcePerFile) reason = group.forcePerFile;
-  else if (dynamicWarnings.length) reason = `hay import() con rutas que no se pueden seguir (${formatMessage(dynamicWarnings[0], ctx.root)})`;
+  else if (dynamicWarnings.length)
+    reason = L(
+      `hay import() con rutas que no se pueden seguir (${formatMessage(dynamicWarnings[0], ctx.root)})`,
+      `there are import() calls with paths that cannot be followed (${formatMessage(dynamicWarnings[0], ctx.root)})`,
+    );
   else if (scanState.unsafe.length) reason = scanState.unsafe[0];
   if (reason) return { mode: 'per-file', reason, inputs, consumed: new Set() };
   for (const w of scan.warnings) ctx.warn(`JS: ${formatMessage(w, ctx.root)}`);
@@ -486,7 +512,10 @@ export async function buildModuleGroup(ctx, group) {
       emitState.vendorOut = vendor.outByAbs;
     } catch (err) {
       ctx.warn(
-        `no se pudieron separar las dependencias en archivos vendor (${esbuildErrorText(err, ctx.root).split('\n')[0]}); van dentro del paquete y se ofuscarán con él`,
+        L(
+          `no se pudieron separar las dependencias en archivos vendor (${esbuildErrorText(err, ctx.root).split('\n')[0]}); van dentro del paquete y se ofuscarán con él`,
+          `could not split dependencies into vendor files (${esbuildErrorText(err, ctx.root).split('\n')[0]}); they stay in the bundle and will be obfuscated with it`,
+        ),
       );
     }
   }
@@ -502,7 +531,10 @@ export async function buildModuleGroup(ctx, group) {
       plugins: [modulePlugin(ctx, group, emitState)],
     });
   } catch (err) {
-    throw new BuildError('No se pudieron empaquetar los módulos JavaScript:', esbuildErrorText(err, ctx.root).split('\n'));
+    throw new BuildError(
+      L('No se pudieron empaquetar los módulos JavaScript:', 'Could not bundle the JavaScript modules:'),
+      esbuildErrorText(err, ctx.root).split('\n'),
+    );
   }
   const maps = new Map();
   const files = [];

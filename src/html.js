@@ -1,5 +1,6 @@
 // HTML: extrae referencias con su posición exacta, aplica ediciones puntuales y minifica con verificación.
 import { parse } from 'parse5';
+import { L } from './i18n.js';
 
 const JS_TYPES = new Set([
   '',
@@ -215,7 +216,7 @@ export function applyEdits(text, edits) {
   let out = text;
   let limit = Infinity;
   for (const e of sorted) {
-    if (e.end > limit) throw new Error(`Ediciones superpuestas en la posición ${e.start}`);
+    if (e.end > limit) throw new Error(L(`Ediciones superpuestas en la posición ${e.start}`, `Overlapping edits at position ${e.start}`));
     out = out.slice(0, e.start) + e.text + out.slice(e.end);
     limit = e.start;
   }
@@ -324,7 +325,7 @@ export async function minifyHtml(text, { removeComments, collapseWhitespace }) {
   try {
     out = applyEdits(text, minifyEdits(text, { removeComments, collapseWhitespace }));
   } catch (err) {
-    return { code: text, note: `no se pudo minificar el HTML (${err.message})` };
+    return { code: text, note: L(`no se pudo minificar el HTML (${err.message})`, `could not minify the HTML (${err.message})`) };
   }
   const before = htmlSignature(text);
   const after = htmlSignature(out);
@@ -332,7 +333,13 @@ export async function minifyHtml(text, { removeComments, collapseWhitespace }) {
     let i = 0;
     while (i < before.length && before[i] === after[i]) i++;
     const near = before.slice(Math.max(0, i - 40), i + 40).replace(/\s+/g, ' ');
-    return { code: text, note: `la minificación cambiaba la estructura cerca de «${near}»; se deja sin minificar` };
+    return {
+      code: text,
+      note: L(
+        `la minificación cambiaba la estructura cerca de «${near}»; se deja sin minificar`,
+        `minification changed the structure near «${near}»; left unminified`,
+      ),
+    };
   }
   return { code: out };
 }

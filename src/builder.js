@@ -41,6 +41,7 @@ import {
   minifyJsonText,
   hasOwn,
 } from './util.js';
+import { L } from './i18n.js';
 
 export const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -141,7 +142,13 @@ class Context {
         // latin1 conserva cada byte tal cual: lo que no se edita sale idéntico.
         text = buf.toString('latin1');
         encoding = 'latin1';
-        this.warn('no es UTF-8; se conserva su codificación original y no se minifica', rel);
+        this.warn(
+          L(
+            'no es UTF-8; se conserva su codificación original y no se minifica',
+            'is not UTF-8; its original encoding is kept and it is not minified',
+          ),
+          rel,
+        );
       } else {
         let label = (charset || 'windows-1252').toLowerCase();
         try {
@@ -151,7 +158,13 @@ class Context {
           text = new TextDecoder(label).decode(buf);
         }
         encoding = label;
-        this.note(`no es UTF-8; se leyó como ${label} y la salida usa escapes ASCII (no depende de la codificación)`, rel);
+        this.note(
+          L(
+            `no es UTF-8; se leyó como ${label} y la salida usa escapes ASCII (no depende de la codificación)`,
+            `is not UTF-8; it was read as ${label} and the output uses ASCII escapes (independent of the encoding)`,
+          ),
+          rel,
+        );
       }
     }
     const stripped = stripBom(text);
@@ -172,17 +185,36 @@ class Context {
     if (this.brokenKeys.has(key)) return;
     this.brokenKeys.add(key);
     this.broken.push({ from, url, status: r.status, target: r.rel });
-    if (r.status === 'ignored') this.warn(`referencia a "${url}", pero ese archivo está excluido (ignore). No se publicará.`, from);
-    else if (r.status === 'case') this.warn(`"${url}" solo existe como "${r.rel}" (otras mayúsculas): en un servidor Linux daría 404.`, from);
-    else if (r.status === 'missing') this.warn(`"${url}" no existe (ya estaba rota en el código fuente).`, from);
-    else if (r.status === 'outside') this.note(`"${url}" apunta fuera del proyecto; se deja igual.`, from);
+    if (r.status === 'ignored')
+      this.warn(
+        L(
+          `referencia a "${url}", pero ese archivo está excluido (ignore). No se publicará.`,
+          `references "${url}", but that file is excluded (ignore). It will not be published.`,
+        ),
+        from,
+      );
+    else if (r.status === 'case')
+      this.warn(
+        L(
+          `"${url}" solo existe como "${r.rel}" (otras mayúsculas): en un servidor Linux daría 404.`,
+          `"${url}" only exists as "${r.rel}" (different capitalization): it would be a 404 on a Linux server.`,
+        ),
+        from,
+      );
+    else if (r.status === 'missing')
+      this.warn(
+        L(`"${url}" no existe (ya estaba rota en el código fuente).`, `"${url}" does not exist (it was already broken in the source code).`),
+        from,
+      );
+    else if (r.status === 'outside')
+      this.note(L(`"${url}" apunta fuera del proyecto; se deja igual.`, `"${url}" points outside the project; left as is.`), from);
   }
 
   registerAsset(rel, from) {
     if (!this.assets.has(rel)) this.assets.set(rel, new Set());
     if (from) this.assets.get(rel).add(from);
     const ext = extOf(rel);
-    if (JS_EXT.has(ext) || CSS_EXT.has(ext)) this.requireStandalone(rel, `referenciado desde ${from}`);
+    if (JS_EXT.has(ext) || CSS_EXT.has(ext)) this.requireStandalone(rel, L(`referenciado desde ${from}`, `referenced from ${from}`));
   }
 
   assetOut(rel) {
@@ -193,7 +225,7 @@ class Context {
   urlTarget(rel, from) {
     const ext = extOf(rel);
     if (JS_EXT.has(ext) || CSS_EXT.has(ext)) {
-      if (!this.workers.has(rel)) this.requireStandalone(rel, `new URL() en ${from}`);
+      if (!this.workers.has(rel)) this.requireStandalone(rel, L(`new URL() en ${from}`, `new URL() in ${from}`));
     } else this.registerAsset(rel, from);
     return jsOutPath(rel);
   }
@@ -206,7 +238,14 @@ class Context {
   registerWorker(rel, info) {
     const prev = this.workers.get(rel);
     if (prev) {
-      if (prev.module !== info.module) this.warn(`se usa como worker clásico y de módulo a la vez; se trata como módulo`, rel);
+      if (prev.module !== info.module)
+        this.warn(
+          L(
+            `se usa como worker clásico y de módulo a la vez; se trata como módulo`,
+            `used as both a classic and a module worker; treated as a module`,
+          ),
+          rel,
+        );
       prev.module = prev.module || info.module;
       return;
     }
@@ -217,7 +256,13 @@ class Context {
   noteJsInfo(id, info, baseDir) {
     for (const w of info.workers) {
       if (!w.spec) {
-        this.warn(`${w.kind} con una ruta que no es texto fijo; Builder no puede seguirla (el archivo se procesará suelto si existe).`, id);
+        this.warn(
+          L(
+            `${w.kind} con una ruta que no es texto fijo; Builder no puede seguirla (el archivo se procesará suelto si existe).`,
+            `${w.kind} with a path that is not fixed text; Builder cannot follow it (the file will be processed on its own if it exists).`,
+          ),
+          id,
+        );
         continue;
       }
       const c = classifyUrl(w.spec);
@@ -228,7 +273,7 @@ class Context {
         this.reportBroken(id, w.spec, this.resolve(w.spec, baseDir));
         continue;
       }
-      if (w.kind === 'importScripts') this.requireStandalone(rel, `importScripts en ${id}`, { classic: true });
+      if (w.kind === 'importScripts') this.requireStandalone(rel, L(`importScripts en ${id}`, `importScripts in ${id}`), { classic: true });
       else this.registerWorker(rel, { module: w.module, kind: w.kind, from: id });
     }
     for (const s of info.strings) {
@@ -261,9 +306,10 @@ class Context {
     if (this.depExcluded(rel)) reason = null;
     else if (this.depIncluded(rel)) reason = 'marcado a mano (dependencies.include)';
     else if (mark === 'own' || pragma === 'own') reason = null;
-    else if (mark === 'dependency') reason = 'marcado en el HTML (data-builder="dependency")';
-    else if (pragma === 'dependency') reason = 'marcado en el propio archivo (@builder-dependency)';
-    else if (/(^|\/)node_modules\//.test(rel)) reason = 'paquete de npm';
+    else if (mark === 'dependency') reason = L('marcado en el HTML (data-builder="dependency")', 'marked in the HTML (data-builder="dependency")');
+    else if (pragma === 'dependency')
+      reason = L('marcado en el propio archivo (@builder-dependency)', 'marked in the file itself (@builder-dependency)');
+    else if (/(^|\/)node_modules\//.test(rel)) reason = L('paquete de npm', 'npm package');
     else if (deps.detect && isJs) reason = detectDependency(rel, text, { packages: this.packageHints() });
     this.depCache.set(rel, reason);
     return reason;
@@ -301,23 +347,35 @@ class Context {
   /** Registra un archivo de salida; nunca sobrescribe en silencio un contenido distinto. */
   emit(outRel, data, meta) {
     const norm = path.posix.normalize(outRel);
-    if (norm.startsWith('../') || path.posix.isAbsolute(norm) || norm === MANIFEST) throw new BuildError(`Ruta de salida inválida: ${outRel}`);
+    if (norm.startsWith('../') || path.posix.isAbsolute(norm) || norm === MANIFEST)
+      throw new BuildError(L(`Ruta de salida inválida: ${outRel}`, `Invalid output path: ${outRel}`));
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, meta.encoding === 'latin1' ? 'latin1' : 'utf8');
     const prev = this.outputs.get(norm);
     if (prev) {
       const same = prev.copyFrom ? fs.readFileSync(prev.copyFrom).equals(buf) : prev.data.equals(buf);
       if (!same)
-        throw new BuildError(`Dos resultados distintos quieren escribirse en "${norm}".`, [
-          `Primero: ${(prev.sources ?? []).join(', ') || prev.action}`,
-          `Después: ${(meta.sources ?? []).join(', ') || meta.action}`,
-          'Suele pasar si el mismo archivo se usa con import maps distintos o si una carpeta del proyecto se llama igual que js.chunkDir.',
-        ]);
+        throw new BuildError(
+          L(`Dos resultados distintos quieren escribirse en "${norm}".`, `Two different results want to be written to "${norm}".`),
+          [
+            L(`Primero: ${(prev.sources ?? []).join(', ') || prev.action}`, `First: ${(prev.sources ?? []).join(', ') || prev.action}`),
+            L(`Después: ${(meta.sources ?? []).join(', ') || meta.action}`, `Second: ${(meta.sources ?? []).join(', ') || meta.action}`),
+            L(
+              'Suele pasar si el mismo archivo se usa con import maps distintos o si una carpeta del proyecto se llama igual que js.chunkDir.',
+              'This usually happens when the same file is used with different import maps, or when a project folder has the same name as js.chunkDir.',
+            ),
+          ],
+        );
       prev.sources = [...new Set([...(prev.sources ?? []), ...(meta.sources ?? [])])];
       return norm;
     }
     const lower = norm.toLowerCase();
     if (this.outLower.has(lower) && this.outLower.get(lower) !== norm)
-      this.warn(`"${norm}" y "${this.outLower.get(lower)}" solo se diferencian en mayúsculas; en Windows/macOS se pisarían.`);
+      this.warn(
+        L(
+          `"${norm}" y "${this.outLower.get(lower)}" solo se diferencian en mayúsculas; en Windows/macOS se pisarían.`,
+          `"${norm}" and "${this.outLower.get(lower)}" differ only in capitalization; on Windows/macOS they would overwrite each other.`,
+        ),
+      );
     this.outLower.set(lower, norm);
     this.outputs.set(norm, { ...meta, data: buf });
     return norm;
@@ -386,7 +444,7 @@ function loadPages(ctx) {
     try {
       model = parseHtml(text);
     } catch (err) {
-      ctx.warn(`no se pudo analizar el HTML (${err.message}); se copia tal cual`, rel);
+      ctx.warn(L(`no se pudo analizar el HTML (${err.message}); se copia tal cual`, `could not parse the HTML (${err.message}); copied as is`), rel);
       continue;
     }
     const dir = path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel);
@@ -395,7 +453,13 @@ function loadPages(ctx) {
       const c = classifyUrl(model.base);
       if (c.type === 'external') {
         page.baseExternal = true;
-        ctx.warn(`<base href="${model.base}"> apunta fuera del sitio; sus rutas relativas no se pueden comprobar y se dejan igual.`, rel);
+        ctx.warn(
+          L(
+            `<base href="${model.base}"> apunta fuera del sitio; sus rutas relativas no se pueden comprobar y se dejan igual.`,
+            `<base href="${model.base}"> points outside the site; its relative paths cannot be checked and are left as they are.`,
+          ),
+          rel,
+        );
       } else if (c.type === 'root' || c.type === 'relative') {
         const p = c.type === 'root' ? (c.path.startsWith(ctx.base) ? c.path.slice(ctx.base.length) : c.path.slice(1)) : path.posix.join(dir, c.path);
         page.baseDir = path.posix
@@ -445,7 +509,7 @@ async function transpileTypeScript(ctx) {
       ctx.tsCode.set(rel, rewriteTsImports(r.code, complete));
     } catch (err) {
       const msg = String(err.errors?.[0]?.text ?? err.message).split('\n')[0];
-      ctx.warn(`TypeScript no válido (${msg}); se copia sin transpilar`, rel);
+      ctx.warn(L(`TypeScript no válido (${msg}); se copia sin transpilar`, `invalid TypeScript (${msg}); copied without transpiling`), rel);
     }
   });
 }
@@ -461,14 +525,23 @@ function markDependencies(ctx, pages) {
         .toLowerCase();
       const value = MARK_VALUES[raw];
       if (!value) {
-        ctx.warn(`data-builder="${raw}" no se reconoce; usa "dependency" o "own"`, page.rel);
+        ctx.warn(
+          L(`data-builder="${raw}" no se reconoce; usa "dependency" o "own"`, `data-builder="${raw}" is not recognized; use "dependency" or "own"`),
+          page.rel,
+        );
         continue;
       }
       const res = ctx.resolve(s.src.value, page.baseDir);
       if (res.status !== 'ok') continue;
       const prev = ctx.depMarks.get(res.rel);
       if (prev && prev !== value)
-        ctx.warn(`"${res.rel}" está marcado como "${prev}" y como "${value}" en distintas páginas; se usa "${prev}"`, page.rel);
+        ctx.warn(
+          L(
+            `"${res.rel}" está marcado como "${prev}" y como "${value}" en distintas páginas; se usa "${prev}"`,
+            `"${res.rel}" is marked as "${prev}" and as "${value}" on different pages; using "${prev}"`,
+          ),
+          page.rel,
+        );
       else ctx.depMarks.set(res.rel, value);
     }
   }
@@ -482,7 +555,7 @@ function selectEntries(ctx, pages) {
     queue = [...pages.values()].filter((p) => p.model.isDocument).map((p) => p.rel);
   } else {
     const { matched, missing } = matchFiles(ctx.files, cfg.entries);
-    if (missing.length) throw new BuildError('Algunas entradas de "entries" no existen:', missing);
+    if (missing.length) throw new BuildError(L('Algunas entradas de "entries" no existen:', 'Some "entries" do not exist:'), missing);
     for (const rel of matched) {
       const ext = extOf(rel);
       if (HTML_EXT.has(ext)) queue.push(rel);
@@ -490,7 +563,11 @@ function selectEntries(ctx, pages) {
       else if (JS_EXT.has(ext)) {
         const info = ctx.jsInfo(rel);
         (info.ok && (info.hasModuleSyntax || info.hasImportMeta) ? extraEntries.modules : extraEntries.classic).push(rel);
-      } else ctx.warn(`"${rel}" no es HTML, JS ni CSS; se copiará como recurso`, 'entries');
+      } else
+        ctx.warn(
+          L(`"${rel}" no es HTML, JS ni CSS; se copiará como recurso`, `"${rel}" is not HTML, JS or CSS; it will be copied as an asset`),
+          'entries',
+        );
     }
   }
   const full = new Set();
@@ -549,7 +626,10 @@ function parseImportMap(ctx, page, item) {
     const json = JSON.parse(item.inline.code);
     return { json, imports: json.imports ?? {}, scopes: json.scopes, baseDir: page.baseDir };
   } catch (err) {
-    ctx.warn(`el import map no es JSON válido (${err.message}); se ignora`, page.rel);
+    ctx.warn(
+      L(`el import map no es JSON válido (${err.message}); se ignora`, `the import map is not valid JSON (${err.message}); ignored`),
+      page.rel,
+    );
     return null;
   }
 }
@@ -580,16 +660,23 @@ function classicRuns(ctx, page) {
       continue;
     }
     const rel = res.rel;
-    if (!JS_EXT.has(extOf(rel))) ctx.note(`<script src> apunta a "${rel}" (extensión no habitual); se trata como JavaScript`, page.rel);
+    if (!JS_EXT.has(extOf(rel)))
+      ctx.note(
+        L(
+          `<script src> apunta a "${rel}" (extensión no habitual); se trata como JavaScript`,
+          `<script src> points to "${rel}" (unusual extension); treated as JavaScript`,
+        ),
+        page.rel,
+      );
     const info = ctx.jsInfo(rel, false);
     const attrs = s.attrs;
     const reasons = [];
-    if (!mergeOn) reasons.push('unión desactivada');
-    if (!info.ok) reasons.push('no se pudo analizar');
-    if (s.inTemplate) reasons.push('dentro de <template>');
+    if (!mergeOn) reasons.push(L('unión desactivada', 'merging disabled'));
+    if (!info.ok) reasons.push(L('no se pudo analizar', 'could not be parsed'));
+    if (s.inTemplate) reasons.push(L('dentro de <template>', 'inside <template>'));
     if (attrs.has('async')) reasons.push('async');
-    if (info.usesCurrentScript) reasons.push('usa document.currentScript');
-    if (info.usesDocumentWrite) reasons.push('usa document.write');
+    if (info.usesCurrentScript) reasons.push(L('usa document.currentScript', 'uses document.currentScript'));
+    if (info.usesDocumentWrite) reasons.push(L('usa document.write', 'uses document.write'));
     const extra = [...attrs.keys()].filter((a) => !MERGE_ATTRS.has(a));
     if (extra.length) reasons.push(`atributos ${extra.join(', ')}`);
     const obf = ctx.shouldObfuscate([rel]);
@@ -650,7 +737,7 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
   // Tiempo de cada fase (perf.phases): para saber dónde se va el tiempo en proyectos reales.
   const phases = [];
   let phaseStart = Date.now();
-  let phaseName = 'preparación';
+  let phaseName = 'setup';
   const mark = (next) => {
     const now = Date.now();
     phases.push([phaseName, now - phaseStart]);
@@ -660,7 +747,7 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
   if (ctx.obfuscatorOptions) await ensureObfuscator(cfg.root);
   if (cfg.js.minifier === 'terser' && cfg.js.minify) await ensureTerser(cfg.root);
 
-  mark('páginas');
+  mark('pages');
   // 1. Páginas y entradas
   await transpileTypeScript(ctx);
   const pages = loadPages(ctx);
@@ -668,12 +755,17 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
   const extra = selectEntries(ctx, pages);
   const fullPages = [...pages.values()].filter((p) => p.full);
   const partialPages = [...pages.values()].filter((p) => !p.full);
-  log(`Páginas: ${fullPages.length} completas, ${partialPages.length} en modo conservador`);
+  log(
+    L(
+      `Páginas: ${fullPages.length} completas, ${partialPages.length} en modo conservador`,
+      `Pages: ${fullPages.length} complete, ${partialPages.length} in conservative mode`,
+    ),
+  );
   const htmlBlob = [];
   for (const p of fullPages) collectRefs(ctx, p);
   for (const p of partialPages) collectRefs(ctx, p);
 
-  mark('módulos');
+  mark('modules');
   // 2. Módulos ES agrupados por import map
   const groups = new Map();
   const groupFor = (page, importMap) => {
@@ -686,7 +778,7 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
         entries: new Set(),
         virtual: new Map(),
         pages: new Set(),
-        forcePerFile: importMap?.scopes ? 'el import map usa "scopes"' : null,
+        forcePerFile: importMap?.scopes ? L('el import map usa "scopes"', 'the import map uses "scopes"') : null,
         vendorSplit: !!ctx.obfuscatorOptions && !cfg.dependencies.obfuscate,
       });
     return groups.get(key);
@@ -695,7 +787,11 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
   const preloadLinks = [];
   for (const page of fullPages) {
     const map = page.model.importMaps[0] ? parseImportMap(ctx, page, page.model.importMaps[0]) : null;
-    if (page.model.importMaps.length > 1) ctx.warn('tiene varios import maps; solo se usa el primero para empaquetar', page.rel);
+    if (page.model.importMaps.length > 1)
+      ctx.warn(
+        L('tiene varios import maps; solo se usa el primero para empaquetar', 'has several import maps; only the first one is used for bundling'),
+        page.rel,
+      );
     let vIndex = 0;
     for (const s of page.model.scripts) {
       if (s.kind !== 'module' || s.inTemplate) continue;
@@ -715,7 +811,7 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
         const outDir = page.baseDir ? `${page.baseDir}/` : '';
         g.virtual.set(id, {
           code: s.inline.code,
-          label: `${page.rel} (módulo inline ${vIndex})`,
+          label: L(`${page.rel} (módulo inline ${vIndex})`, `${page.rel} (inline module ${vIndex})`),
           baseDir: page.baseDir,
           out: `${outDir}__vb_inline_${shortHash(id)}`,
           page,
@@ -743,8 +839,14 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
     if (!g.entries.size && !g.virtual.size) continue;
     const res = await buildModuleGroup(ctx, { ...g, hash: g.hash });
     if (res.mode === 'per-file') {
-      ctx.note(`módulos sin empaquetar (cada archivo minificado en su sitio): ${res.reason}`, [...g.pages].join(', ') || 'entries');
-      for (const rel of res.inputs) ctx.requireStandalone(rel, 'módulo (modo sin empaquetar)', { module: true });
+      ctx.note(
+        L(
+          `módulos sin empaquetar (cada archivo minificado en su sitio): ${res.reason}`,
+          `modules not bundled (each file minified in place): ${res.reason}`,
+        ),
+        [...g.pages].join(', ') || 'entries',
+      );
+      for (const rel of res.inputs) ctx.requireStandalone(rel, L('módulo (modo sin empaquetar)', 'module (unbundled mode)'), { module: true });
       for (const rel of g.entries) entryOut.set(`${g.key}\0${rel}`, jsOutPath(rel));
       for (const [id, v] of g.virtual) {
         const info = analyzeJs(v.code, { module: true });
@@ -757,7 +859,12 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
       }
       continue;
     }
-    log(`Módulos: ${g.entries.size} entradas, ${res.inputs.length} archivos, target ${res.target}`);
+    log(
+      L(
+        `Módulos: ${g.entries.size} entradas, ${res.inputs.length} archivos, target ${res.target}`,
+        `Modules: ${g.entries.size} entries, ${res.inputs.length} files, target ${res.target}`,
+      ),
+    );
     // Ofuscar/comprimir cada salida en paralelo; registrar después en el orden original (salida determinista).
     const finals = await mapLimit(res.outputs, 64, async (o) => {
       const obfRels = o.virtualId ? [g.virtual.get(o.virtualId).page.rel] : o.isChunk ? o.inputs : [o.entry];
@@ -775,18 +882,24 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
       if (o.virtualId) {
         const v = g.virtual.get(o.virtualId);
         inlineModuleCode.set(o.virtualId, code.replace(/\n$/, ''));
-        for (const rel of o.inputs) ctx.cover(rel, 'empaquetado', `${v.page.rel} (módulo inline)`);
+        for (const rel of o.inputs) ctx.cover(rel, L('empaquetado', 'bundled'), L(`${v.page.rel} (módulo inline)`, `${v.page.rel} (inline module)`));
         continue;
       }
       const action = o.isVendor ? 'vendor' : o.isChunk ? 'chunk' : 'bundle';
       const outRel = ctx.emitCode(o.outRel, code, map, { type: 'js', module: true, action, sources, before: o.before || sumSizes(ctx, sources) });
       if (o.entry) entryOut.set(`${g.key}\0${o.entry}`, outRel);
-      for (const rel of o.inputs) ctx.cover(rel, o.isVendor ? 'empaquetado (dependencia, sin ofuscar)' : 'empaquetado', outRel);
+      for (const rel of o.inputs)
+        ctx.cover(
+          rel,
+          o.isVendor ? L('empaquetado (dependencia, sin ofuscar)', 'bundled (dependency, not obfuscated)') : L('empaquetado', 'bundled'),
+          outRel,
+        );
     }
     for (const spec of res.vendor) if (!ctx.vendorPackages.includes(spec)) ctx.vendorPackages.push(spec);
     // esbuild puede incrustar un módulo entero (p. ej. constantes) sin que figure en ninguna salida.
     for (const rel of res.consumed) {
-      if (!ctx.coverage.get(rel)?.some((s) => s.startsWith('empaquetado'))) ctx.cover(rel, 'empaquetado (incrustado por completo en el paquete)');
+      if (!ctx.coverage.get(rel)?.some((s) => s.startsWith(L('empaquetado', 'bundled'))))
+        ctx.cover(rel, L('empaquetado (incrustado por completo en el paquete)', 'bundled (fully inlined into the bundle)'));
     }
   }
 
@@ -810,15 +923,15 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
     const hashed = cfg.hash && !extra.css.includes(rel);
     const r = cssBuilt[ci];
     if (r.error) {
-      ctx.warn(`no se pudo procesar el CSS (${r.error}); se copia tal cual`, rel);
+      ctx.warn(L(`no se pudo procesar el CSS (${r.error}); se copia tal cual`, `could not process the CSS (${r.error}); copied as is`), rel);
       cssOut.set(rel, ctx.emitCopy(rel, rel, 'copy-fallback'));
-      ctx.cover(rel, 'copiado sin cambios (error al procesar)', rel);
+      ctx.cover(rel, L('copiado sin cambios (error al procesar)', 'copied unchanged (processing error)'), rel);
       continue;
     }
     const outRel = hashed ? ctx.hashedPath(rel, r.code, '.css') : rel;
     ctx.emitCode(outRel, r.code, r.map, { type: 'css', action: 'bundle', sources: r.inputs, before: sumSizes(ctx, r.inputs) });
     cssOut.set(rel, outRel);
-    for (const i of r.inputs) ctx.cover(i, i === rel ? 'procesado' : 'empaquetado', outRel);
+    for (const i of r.inputs) ctx.cover(i, i === rel ? L('procesado', 'processed') : L('empaquetado', 'bundled'), outRel);
   }
 
   mark('white-space');
@@ -831,11 +944,14 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
     collapse = !pre;
     if (pre)
       ctx.note(
-        'se usa white-space: pre/pre-wrap/pre-line en el CSS; el HTML no colapsa espacios para no alterar ningún texto (html.collapseWhitespace: true lo fuerza)',
+        L(
+          'se usa white-space: pre/pre-wrap/pre-line en el CSS; el HTML no colapsa espacios para no alterar ningún texto (html.collapseWhitespace: true lo fuerza)',
+          'white-space: pre/pre-wrap/pre-line is used in the CSS; HTML whitespace is not collapsed so no text changes (html.collapseWhitespace: true forces it)',
+        ),
       );
   }
 
-  mark('scripts clásicos');
+  mark('classic scripts');
   // 5. Scripts clásicos por página
   // Primero se planifican todas las páginas, luego se minifica/ofusca cada grupo distinto en paralelo
   // y por último se registra todo en el orden original.
@@ -876,7 +992,7 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
     }
   }
 
-  mark('edición html');
+  mark('html edits');
   // 6. Edición de cada página: módulos, CSS, inline, preload
   for (const page of fullPages) {
     for (const m of moduleRefs.filter((x) => x.page === page)) {
@@ -902,11 +1018,11 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
   }
   for (const page of pages.values()) await processInline(ctx, page, collapse);
 
-  mark('workers y sueltos');
+  mark('workers and standalone');
   // 7. Workers, archivos sueltos y rutas mencionadas (hasta que no aparezca nada nuevo)
   await drainQueues(ctx, cssOut);
 
-  mark('no referenciados');
+  mark('unreferenced');
   // 8. Archivos no referenciados
   const unref = [];
   for (const [rel, f] of ctx.files) {
@@ -916,15 +1032,16 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
   for (const rel of unref) {
     if (ctx.coverage.has(rel)) continue;
     const f = ctx.files.get(rel);
-    if (cfg.unreferenced === 'process' || f.forced) ctx.requireStandalone(rel, 'no referenciado (se procesa suelto)');
+    if (cfg.unreferenced === 'process' || f.forced)
+      ctx.requireStandalone(rel, L('no referenciado (se procesa suelto)', 'unreferenced (processed on its own)'));
     else if (cfg.unreferenced === 'copy') {
       ctx.emitCopy(rel, rel);
-      ctx.cover(rel, 'no referenciado: copiado', rel);
-    } else ctx.cover(rel, 'no referenciado: omitido (unreferenced: skip)');
+      ctx.cover(rel, L('no referenciado: copiado', 'unreferenced: copied'), rel);
+    } else ctx.cover(rel, L('no referenciado: omitido (unreferenced: skip)', 'unreferenced: skipped (unreferenced: skip)'));
   }
   await drainQueues(ctx, cssOut);
 
-  mark('html final');
+  mark('final html');
   // 9. Preloads y HTML final
   for (const { page, l } of preloadLinks) {
     const res = ctx.resolve(l.href.value, page.baseDir);
@@ -935,7 +1052,13 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
       (ctx.hasOwnOutput(res.rel) || ctx.assets.has(res.rel) ? res.rel : null);
     if (target == null) {
       page.edits.push({ start: l.start, end: l.end, text: '' });
-      ctx.note(`se quita <link rel="${l.rels.join(' ')}" href="${l.href.value}">: ese archivo ahora va dentro de un paquete`, page.rel);
+      ctx.note(
+        L(
+          `se quita <link rel="${l.rels.join(' ')}" href="${l.href.value}">: ese archivo ahora va dentro de un paquete`,
+          `removed <link rel="${l.rels.join(' ')}" href="${l.href.value}">: that file is now inside a bundle`,
+        ),
+        page.rel,
+      );
     } else if (target !== res.rel) {
       page.edits.push({ start: l.href.start, end: l.href.end, text: attrText('href', urlFor(ctx, page, l.href.value, target)) });
     }
@@ -944,30 +1067,34 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
   for (const page of pages.values()) {
     const referenced = page.full || ctx.pageRefs.has(page.rel) || ctx.mentions.has(page.rel) || ctx.files.get(page.rel).forced;
     if (!referenced && cfg.unreferenced === 'skip') {
-      ctx.cover(page.rel, 'no referenciado: omitido (unreferenced: skip)');
+      ctx.cover(page.rel, L('no referenciado: omitido (unreferenced: skip)', 'unreferenced: skipped (unreferenced: skip)'));
       continue;
     }
     if (!referenced && cfg.unreferenced === 'copy') {
       ctx.emitCopy(page.rel, page.rel);
-      ctx.cover(page.rel, 'no referenciado: copiado', page.rel);
+      ctx.cover(page.rel, L('no referenciado: copiado', 'unreferenced: copied'), page.rel);
       continue;
     }
     await finalizePage(ctx, page, collapse);
   }
 
-  mark('recursos');
+  mark('assets');
   // 10. Recursos: todo lo demás se copia (sin perder nada)
   for (const [rel, f] of ctx.files) {
     if (ctx.hasOwnOutput(rel)) {
-      if (!ctx.coverage.has(rel)) ctx.cover(rel, 'procesado', rel);
+      if (!ctx.coverage.has(rel)) ctx.cover(rel, L('procesado', 'processed'), rel);
       continue;
     }
     const cov = ctx.coverage.get(rel);
     // Empaquetar solo absorbe JS y CSS; un JSON importado se publica también por si se pide con fetch().
-    if (cov && (JS_EXT.has(f.ext) || CSS_EXT.has(f.ext) || HTML_EXT.has(f.ext) || cov.some((s) => s.startsWith('no referenciado')))) continue;
+    if (
+      cov &&
+      (JS_EXT.has(f.ext) || CSS_EXT.has(f.ext) || HTML_EXT.has(f.ext) || cov.some((s) => s.startsWith(L('no referenciado', 'unreferenced'))))
+    )
+      continue;
     const referenced = ctx.assets.has(rel) || ctx.mentions.has(rel);
     if (cfg.unreferenced === 'skip' && !referenced && !f.forced) {
-      ctx.cover(rel, 'no referenciado: omitido (unreferenced: skip)');
+      ctx.cover(rel, L('no referenciado: omitido (unreferenced: skip)', 'unreferenced: skipped (unreferenced: skip)'));
       continue;
     }
     if ((f.ext === '.json' || f.ext === '.webmanifest') && cfg.json.minify) {
@@ -975,33 +1102,43 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
       const min = raw == null ? null : minifyJsonText(stripBom(raw).text);
       if (min != null && Buffer.byteLength(min) < f.size) {
         ctx.emit(rel, min, { type: 'json', action: 'minify', sources: [rel], before: f.size });
-        ctx.cover(rel, 'JSON minificado', rel);
+        ctx.cover(rel, L('JSON minificado', 'JSON minified'), rel);
         continue;
       }
     }
     ctx.emitCopy(rel, rel);
-    ctx.cover(rel, 'copiado', rel);
+    ctx.cover(rel, L('copiado', 'copied'), rel);
   }
 
-  mark('avisos');
+  mark('warnings');
   // 11. Avisos de rutas mencionadas en el código que ya no existirán
   for (const [rel, from] of ctx.mentions) {
-    if (!ctx.outputs.has(rel) && ctx.coverage.get(rel)?.every((s) => s.startsWith('empaquetado'))) {
-      ctx.warn(`"${rel}" se menciona como texto en ${from} pero ya no existe por separado (va dentro de un paquete).`);
+    if (!ctx.outputs.has(rel) && ctx.coverage.get(rel)?.every((s) => s.startsWith(L('empaquetado', 'bundled')))) {
+      ctx.warn(
+        L(
+          `"${rel}" se menciona como texto en ${from} pero ya no existe por separado (va dentro de un paquete).`,
+          `"${rel}" is mentioned as text in ${from} but no longer exists on its own (it is inside a bundle).`,
+        ),
+      );
     }
   }
   if (cfg.hash) {
     for (const [rel, from] of ctx.mentions) {
       if ((cssOut.get(rel) ?? rel) !== rel)
-        ctx.note(`"${rel}" se menciona como texto en ${from}: además de la versión con hash se publica en su ruta original.`);
+        ctx.note(
+          L(
+            `"${rel}" se menciona como texto en ${from}: además de la versión con hash se publica en su ruta original.`,
+            `"${rel}" is mentioned as text in ${from}: besides the hashed version, it is published at its original path.`,
+          ),
+        );
     }
   }
 
-  mark('precompresión');
+  mark('precompression');
   // 12. Precompresión .gz / .br para servidores que sirven archivos comprimidos (nginx gzip_static, etc.)
   if (cfg.compress && mode === 'build') await precompress(ctx, cfg.compress === true ? ['gzip', 'brotli'] : [cfg.compress]);
 
-  mark('informe de tamaños');
+  mark('size report');
   const report = await buildReport(ctx.outputs, ctx.heavy);
   const result = {
     version: VERSION,
@@ -1033,7 +1170,7 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
     return result;
   }
 
-  mark('escritura y verificación');
+  mark('write and verify');
   // 12. Escritura, verificación y publicación
   let staging;
   try {
@@ -1042,7 +1179,13 @@ async function pipeline(ctx, cfg, opts, mode, t0) {
       result.verify = await verifyOutput(staging, ctx.outputs, ctx);
       if (result.verify.errors.length) {
         if (!opts.keepFailed) await discardStaging(staging);
-        throw new BuildError(`La verificación encontró ${result.verify.errors.length} problema(s); no se tocó ${cfg.outDir}.`, result.verify.errors);
+        throw new BuildError(
+          L(
+            `La verificación encontró ${result.verify.errors.length} problema(s); no se tocó ${cfg.outDir}.`,
+            `Verification found ${result.verify.errors.length} problem(s); ${cfg.outDir} was not touched.`,
+          ),
+          result.verify.errors,
+        );
       }
     }
     await writeManifest(staging, {
@@ -1095,13 +1238,13 @@ function markModuleImport(ctx, spec, baseDir, from, importMap) {
             .map((k) => importMap.imports[k] + spec.slice(k.length))[0];
       if (target) {
         const r = ctx.resolve(target, importMap.baseDir);
-        if (r.status === 'ok') ctx.requireStandalone(r.rel, `importado desde ${from}`, { module: true });
+        if (r.status === 'ok') ctx.requireStandalone(r.rel, L(`importado desde ${from}`, `imported from ${from}`), { module: true });
       }
     }
     return;
   }
   const r = ctx.resolve(spec, baseDir);
-  if (r.status === 'ok') ctx.requireStandalone(r.rel, `importado desde ${from}`, { module: true });
+  if (r.status === 'ok') ctx.requireStandalone(r.rel, L(`importado desde ${from}`, `imported from ${from}`), { module: true });
   else ctx.reportBroken(from, spec, r);
 }
 
@@ -1132,9 +1275,12 @@ function commitClassicRun(ctx, run, page, comp) {
   const items = run.items;
   const first = items[0];
   if (comp.copy) {
-    ctx.warn(`no se pudo analizar (${first.info.error}); se copia sin cambios`, first.rel);
+    ctx.warn(
+      L(`no se pudo analizar (${first.info.error}); se copia sin cambios`, `could not be parsed (${first.info.error}); copied unchanged`),
+      first.rel,
+    );
     const outRel = ctx.emitCopy(first.rel, first.rel, 'copy-fallback');
-    ctx.cover(first.rel, 'copiado sin cambios (no se pudo analizar)', outRel);
+    ctx.cover(first.rel, L('copiado sin cambios (no se pudo analizar)', 'copied unchanged (could not be parsed)'), outRel);
     return { merged: false, outs: [{ outRel, changed: false }] };
   }
   {
@@ -1150,20 +1296,25 @@ function commitClassicRun(ctx, run, page, comp) {
           items.map((c) => c.rel),
         ),
       });
-      for (const c of items) ctx.cover(c.rel, 'unido', outRel);
+      for (const c of items) ctx.cover(c.rel, L('unido', 'merged'), outRel);
       return { merged: true, outRel };
     }
-    if (comp.mergeError) ctx.warn(`no se pudieron unir (${comp.mergeError}); se procesan por separado`, page.rel);
+    if (comp.mergeError)
+      ctx.warn(
+        L(`no se pudieron unir (${comp.mergeError}); se procesan por separado`, `could not be merged (${comp.mergeError}); processed separately`),
+        page.rel,
+      );
   }
   // Un solo archivo, o una unión fallida: cada uno se procesa en su sitio.
   const outs = [];
   for (const [i, c] of items.entries()) {
     const r = comp.separate[i];
     for (const n of r.notes) ctx.note(n, c.rel);
-    if (c.reasons.length && c.reasons[0] !== 'unión desactivada') ctx.note(`no se une con otros scripts: ${c.reasons.join(', ')}`, c.rel);
+    if (c.reasons.length && c.reasons[0] !== L('unión desactivada', 'merging disabled'))
+      ctx.note(L(`no se une con otros scripts: ${c.reasons.join(', ')}`, `not merged with other scripts: ${c.reasons.join(', ')}`), c.rel);
     const outRel = ctx.cfg.hash ? ctx.hashedPath(c.rel, r.code, '.js') : jsOutPath(c.rel);
     ctx.emitCode(outRel, r.code, r.map, { type: 'js', action: 'minify', sources: [c.rel], before: ctx.files.get(c.rel).size });
-    ctx.cover(c.rel, 'procesado', outRel);
+    ctx.cover(c.rel, L('procesado', 'processed'), outRel);
     outs.push({ outRel, changed: true });
   }
   return { merged: false, outs };
@@ -1176,7 +1327,7 @@ async function processInline(ctx, page) {
     if (s.src) {
       if (!page.full) {
         const res = ctx.resolve(s.src.value, page.baseDir);
-        if (res.status === 'ok') ctx.requireStandalone(res.rel, `script en ${page.rel}`, { module: s.kind === 'module' });
+        if (res.status === 'ok') ctx.requireStandalone(res.rel, L(`script en ${page.rel}`, `script in ${page.rel}`), { module: s.kind === 'module' });
         else if (res.status !== 'skip') ctx.reportBroken(page.rel, s.src.value, res);
       }
       continue;
@@ -1185,7 +1336,10 @@ async function processInline(ctx, page) {
     if (s.kind === 'classic') {
       const info = analyzeJs(s.inline.code, { module: false });
       if (!info.ok) {
-        ctx.note(`un <script> inline no es JS estándar (¿plantilla?); se deja igual`, page.rel);
+        ctx.note(
+          L(`un <script> inline no es JS estándar (¿plantilla?); se deja igual`, `an inline <script> is not standard JS (a template?); left as is`),
+          page.rel,
+        );
         continue;
       }
       ctx.noteJsInfo(page.rel, info, page.baseDir);
@@ -1215,7 +1369,7 @@ async function processInline(ctx, page) {
     for (const l of page.model.links) {
       if (l.type !== 'stylesheet') continue;
       const res = ctx.resolve(l.href.value, page.baseDir);
-      if (res.status === 'ok') ctx.requireStandalone(res.rel, `hoja de estilos en ${page.rel}`);
+      if (res.status === 'ok') ctx.requireStandalone(res.rel, L(`hoja de estilos en ${page.rel}`, `stylesheet in ${page.rel}`));
       else if (res.status !== 'skip') ctx.reportBroken(page.rel, l.href.value, res);
     }
   }
@@ -1227,7 +1381,13 @@ async function processInline(ctx, page) {
         outRel: page.baseDir ? `${page.baseDir}/__page.html` : '__page.html',
       });
       if (r.error) {
-        ctx.note(`un <style> no se pudo minificar (${r.error.split('\n')[0]}); se deja igual`, page.rel);
+        ctx.note(
+          L(
+            `un <style> no se pudo minificar (${r.error.split('\n')[0]}); se deja igual`,
+            `a <style> could not be minified (${r.error.split('\n')[0]}); left as is`,
+          ),
+          page.rel,
+        );
         continue;
       }
       if (r.code !== st.code) page.edits.push({ start: st.start, end: st.end, text: escapeInlineStyle(r.code) });
@@ -1264,7 +1424,7 @@ async function finalizePage(ctx, page, collapse) {
     baseDir: page.baseDir,
     baseExternal: page.baseExternal,
   });
-  ctx.cover(page.rel, page.full ? 'procesado' : 'procesado (modo conservador)', page.rel);
+  ctx.cover(page.rel, page.full ? L('procesado', 'processed') : L('procesado (modo conservador)', 'processed (conservative mode)'), page.rel);
 }
 
 /** Procesa workers y archivos que deben existir sueltos en su ruta original, hasta agotar la cola. */
@@ -1275,7 +1435,7 @@ async function drainQueues(ctx, cssOut) {
     for (const [rel] of ctx.mentions) {
       const ext = extOf(rel);
       if ((JS_EXT.has(ext) || CSS_EXT.has(ext)) && !ctx.hasOwnOutput(rel) && !ctx.standalone.has(rel))
-        ctx.requireStandalone(rel, `mencionado como texto en ${ctx.mentions.get(rel)}`);
+        ctx.requireStandalone(rel, L(`mencionado como texto en ${ctx.mentions.get(rel)}`, `mentioned as text in ${ctx.mentions.get(rel)}`));
       else if (!JS_EXT.has(ext) && !CSS_EXT.has(ext) && !HTML_EXT.has(ext)) ctx.registerAsset(rel, ctx.mentions.get(rel));
     }
     for (const [rel, w] of ctx.workers) {
@@ -1286,7 +1446,13 @@ async function drainQueues(ctx, cssOut) {
       if (w.module) {
         const r = await buildModuleWorker(ctx, rel);
         if (r.error) {
-          ctx.warn(`no se pudo empaquetar el worker (${r.error.split('\n')[0]}); se procesa suelto`, rel);
+          ctx.warn(
+            L(
+              `no se pudo empaquetar el worker (${r.error.split('\n')[0]}); se procesa suelto`,
+              `could not bundle the worker (${r.error.split('\n')[0]}); processed on its own`,
+            ),
+            rel,
+          );
           ctx.requireStandalone(rel, 'worker (respaldo)', { module: true });
           continue;
         }
@@ -1304,8 +1470,9 @@ async function drainQueues(ctx, cssOut) {
           sources,
           before: sumSizes(ctx, sources),
         });
-        for (const s of sources) ctx.cover(s, s === rel ? 'procesado (worker)' : 'empaquetado', jsOutPath(rel));
-      } else ctx.requireStandalone(rel, `worker clásico (${w.kind})`, { classic: true });
+        for (const s of sources)
+          ctx.cover(s, s === rel ? L('procesado (worker)', 'processed (worker)') : L('empaquetado', 'bundled'), jsOutPath(rel));
+      } else ctx.requireStandalone(rel, L(`worker clásico (${w.kind})`, `classic worker (${w.kind})`), { classic: true });
     }
     // Análisis en orden, trabajo pesado en paralelo, registro otra vez en orden.
     const jobs = [];
@@ -1321,7 +1488,9 @@ async function drainQueues(ctx, cssOut) {
     jobs.forEach((j, i) => j.commit(results[i]));
     if (!progressed) return;
   }
-  throw new BuildError('Demasiadas rondas al resolver dependencias (¿ciclo inesperado?).');
+  throw new BuildError(
+    L('Demasiadas rondas al resolver dependencias (¿ciclo inesperado?).', 'Too many rounds resolving dependencies (unexpected cycle?).'),
+  );
 }
 
 /**
@@ -1337,13 +1506,19 @@ function planStandalone(ctx, rel, s, cssOut) {
       run: () => buildCss(ctx, { entry: rel, outRel: rel }),
       commit: (r) => {
         if (r.error) {
-          ctx.warn(`no se pudo procesar el CSS (${r.error.split('\n')[0]}); se copia tal cual`, rel);
+          ctx.warn(
+            L(
+              `no se pudo procesar el CSS (${r.error.split('\n')[0]}); se copia tal cual`,
+              `could not process the CSS (${r.error.split('\n')[0]}); copied as is`,
+            ),
+            rel,
+          );
           ctx.emitCopy(rel, rel, 'copy-fallback');
-          ctx.cover(rel, 'copiado sin cambios (error al procesar)', rel);
+          ctx.cover(rel, L('copiado sin cambios (error al procesar)', 'copied unchanged (processing error)'), rel);
           return;
         }
         ctx.emitCode(rel, r.code, r.map, { type: 'css', action: 'standalone', sources: [rel], before: ctx.files.get(rel).size });
-        for (const i of r.inputs) ctx.cover(i, i === rel ? 'procesado (suelto)' : 'empaquetado', rel);
+        for (const i of r.inputs) ctx.cover(i, i === rel ? L('procesado (suelto)', 'processed (standalone)') : L('empaquetado', 'bundled'), rel);
         if (!cssOut.has(rel)) cssOut.set(rel, rel);
       },
     };
@@ -1356,9 +1531,9 @@ function planStandalone(ctx, rel, s, cssOut) {
   const isModule = !s.classic && (s.module || (auto.ok && (auto.hasModuleSyntax || auto.hasImportMeta)) || (!auto.ok && auto.isModule));
   const info = isModule ? ctx.jsInfo(rel, true) : ctx.jsInfo(rel, false);
   if (!info.ok) {
-    ctx.warn(`no se pudo analizar (${info.error}); se copia sin cambios`, rel);
+    ctx.warn(L(`no se pudo analizar (${info.error}); se copia sin cambios`, `could not be parsed (${info.error}); copied unchanged`), rel);
     ctx.emitCopy(rel, rel, 'copy-fallback');
-    ctx.cover(rel, 'copiado sin cambios (no se pudo analizar)', rel);
+    ctx.cover(rel, L('copiado sin cambios (no se pudo analizar)', 'copied unchanged (could not be parsed)'), rel);
     return null;
   }
   ctx.noteJsInfo(rel, info, dir);
@@ -1379,7 +1554,7 @@ function planStandalone(ctx, rel, s, cssOut) {
       for (const n of r.notes) ctx.note(n, rel);
       const out = jsOutPath(rel);
       ctx.emitCode(out, r.code, r.map, { type: 'js', module: isModule, action: 'standalone', sources: [rel], before: ctx.files.get(rel).size });
-      ctx.cover(rel, `procesado suelto (${s.reason})`, out);
+      ctx.cover(rel, L(`procesado suelto (${s.reason})`, `processed standalone (${s.reason})`), out);
     },
   };
 }

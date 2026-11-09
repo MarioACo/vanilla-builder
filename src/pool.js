@@ -11,6 +11,7 @@ import { ensureObfuscator, obfuscateSafe } from './obfuscate.js';
 import { importOptional } from './optional.js';
 import { terserMinify } from './tersercore.js';
 import { jsImports } from './jsimports.js';
+import { L, getLang } from './i18n.js';
 
 const WORKER_URL = new URL('./worker.js', import.meta.url);
 const OWN_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -84,7 +85,8 @@ export function createHeavy({ root, workers = autoWorkers(), cacheDir = null }) 
 
   function cacheKey(kind, payload) {
     const engine = kind === 'obfuscate' ? 'javascript-obfuscator' : kind === 'terser' ? 'terser' : 'acorn';
-    const meta = JSON.stringify([CACHE_FORMAT, OWN_VERSION, kind, versionOf(engine), payload.opts, plain(payload.opts.globals)]);
+    // El idioma entra en la clave: los motivos de rechazo ("no se ofuscó: …") se guardan ya traducidos.
+    const meta = JSON.stringify([CACHE_FORMAT, OWN_VERSION, kind, versionOf(engine), getLang(), payload.opts, plain(payload.opts.globals)]);
     return crypto.createHash('sha256').update(meta).update('\0').update(payload.code).digest('hex');
   }
 
@@ -175,12 +177,12 @@ export function createHeavy({ root, workers = autoWorkers(), cacheDir = null }) 
       await ensureObfuscator(root);
       return obfuscateSafe(payload.code, payload.opts);
     }
-    inProcessTerser ??= await importOptional('terser', root, 'para la compresión máxima');
+    inProcessTerser ??= await importOptional('terser', root, L('para la compresión máxima', 'for maximum compression'));
     return terserMinify(inProcessTerser, payload.code, payload.opts);
   }
 
   function spawn() {
-    const w = new Worker(WORKER_URL, { workerData: { root } });
+    const w = new Worker(WORKER_URL, { workerData: { root, lang: getLang() } });
     w.on('message', ({ id, result, error }) => {
       const p = pending.get(id);
       pending.delete(id);

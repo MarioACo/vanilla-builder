@@ -4,8 +4,12 @@ import { ensureObfuscator, obfuscateSafe } from './obfuscate.js';
 import { importOptional } from './optional.js';
 import { terserMinify } from './tersercore.js';
 import { jsImports } from './jsimports.js';
+import { L, setLang } from './i18n.js';
 
 let terser = null;
+
+// Mismo idioma que el proceso principal (puede venir de --lang).
+setLang(workerData.lang);
 
 parentPort.on('message', async ({ id, kind, payload }) => {
   try {
@@ -14,7 +18,7 @@ parentPort.on('message', async ({ id, kind, payload }) => {
       await ensureObfuscator(workerData.root);
       result = obfuscateSafe(payload.code, payload.opts);
     } else if (kind === 'terser') {
-      terser ??= await importOptional('terser', workerData.root, 'para la compresión máxima');
+      terser ??= await importOptional('terser', workerData.root, L('para la compresión máxima', 'for maximum compression'));
       result = await terserMinify(terser, payload.code, payload.opts);
     } else if (kind === 'imports') {
       result = jsImports(payload.code, payload.opts.isModule);

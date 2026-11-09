@@ -3,6 +3,7 @@ import * as acorn from 'acorn';
 import { shortHash } from './util.js';
 import { compareGlobals, moduleShape, checkSyntax } from './jsinfo.js';
 import { importOptional } from './optional.js';
+import { L } from './i18n.js';
 
 // Nunca se activan solos: cambian el comportamiento o rompen código que comparte globales.
 const FORCED_SAFE = { renameGlobals: false, renameProperties: false, sourceMap: false, target: 'browser' };
@@ -101,7 +102,7 @@ let engine = null;
 /** Carga javascript-obfuscator (instalado junto a Builder o en el proyecto). */
 export async function ensureObfuscator(projectRoot) {
   if (!engine) {
-    const mod = await importOptional('javascript-obfuscator', projectRoot, 'para ofuscar el JavaScript');
+    const mod = await importOptional('javascript-obfuscator', projectRoot, L('para ofuscar el JavaScript', 'to obfuscate JavaScript'));
     engine = mod.default ?? mod;
   }
   return engine;
@@ -143,15 +144,18 @@ export function obfuscateSafe(code, { isModule, options, id, globals }) {
   try {
     out = engine.obfuscate(body, opts).getObfuscatedCode();
   } catch (err) {
-    return { code: null, reason: `el ofuscador falló (${String(err.message).split('\n')[0]})` };
+    return {
+      code: null,
+      reason: L(`el ofuscador falló (${String(err.message).split('\n')[0]})`, `the obfuscator failed (${String(err.message).split('\n')[0]})`),
+    };
   }
   if (isModule) {
     const err = checkSyntax(out, true);
-    if (err) return { code: null, reason: `resultado inválido (${err})` };
+    if (err) return { code: null, reason: L(`resultado inválido (${err})`, `invalid result (${err})`) };
     const a = moduleShape(body);
     const b = moduleShape(out);
     if (!a || !b || a.exports !== b.exports || a.imports !== b.imports)
-      return { code: null, reason: 'cambiaron las exportaciones o importaciones del módulo' };
+      return { code: null, reason: L('cambiaron las exportaciones o importaciones del módulo', 'the module exports or imports changed') };
   } else {
     const cmp = compareGlobals(globals, out, prefix);
     if (!cmp.ok) return { code: null, reason: cmp.reason };

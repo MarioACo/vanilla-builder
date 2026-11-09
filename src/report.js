@@ -1,6 +1,7 @@
 // Informe de tamaños (original, final, gzip y brotli) por archivo y totales.
 import { formatBytes } from './util.js';
 import { gzipOf, brotliOf, mapLimit } from './compress.js';
+import { L } from './i18n.js';
 
 const COMPRESSIBLE = new Set(['html', 'css', 'js', 'json', 'svg', 'text']);
 
@@ -51,15 +52,20 @@ export function renderReport(report, C, { verbose = false } = {}) {
   const lines = [];
   const shown = report.rows.filter((r) => verbose || r.action !== 'copy');
   const hidden = report.rows.filter((r) => !verbose && r.action === 'copy');
-  const hiddenLabel = `+ ${hidden.length} recursos copiados sin cambios`;
+  const hiddenLabel = L(`+ ${hidden.length} recursos copiados sin cambios`, `+ ${hidden.length} assets copied unchanged`);
   const w = Math.min(60, Math.max(20, ...shown.map((r) => r.file.length), hidden.length ? hiddenLabel.length : 0));
   const pad = (s, n) => (s.length > n ? `…${s.slice(-(n - 1))}` : s.padEnd(n));
   const num = (n) => (n == null ? '—' : formatBytes(n)).padStart(10);
   lines.push(
-    C.gray(`${'Archivo'.padEnd(w)}  ${'Antes'.padStart(10)}  ${'Después'.padStart(10)}  ${'gzip'.padStart(10)}  ${'brotli'.padStart(10)}  Ahorro`),
+    C.gray(
+      L(
+        `${'Archivo'.padEnd(w)}  ${'Antes'.padStart(10)}  ${'Después'.padStart(10)}  ${'gzip'.padStart(10)}  ${'brotli'.padStart(10)}  Ahorro`,
+        `${'File'.padEnd(w)}  ${'Before'.padStart(10)}  ${'After'.padStart(10)}  ${'gzip'.padStart(10)}  ${'brotli'.padStart(10)}  Saved`,
+      ),
+    ),
   );
   for (const r of shown) {
-    const src = r.sources && r.sources.length > 1 ? C.gray(` (${r.sources.length} archivos)`) : '';
+    const src = r.sources && r.sources.length > 1 ? C.gray(L(` (${r.sources.length} archivos)`, ` (${r.sources.length} files)`)) : '';
     lines.push(`${pad(r.file, w)}  ${num(r.before)}  ${num(r.size)}  ${num(r.gzip)}  ${num(r.brotli)}  ${pct(r.before, r.size).padStart(6)}${src}`);
   }
   if (hidden.length) {

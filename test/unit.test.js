@@ -11,6 +11,9 @@ import { rebaseImports } from '../src/js.js';
 import { normalizeConfig } from '../src/config.js';
 import { obfuscateSafe, resolveObfuscatorOptions, ensureObfuscator } from '../src/obfuscate.js';
 import { cssRefs } from '../src/verify.js';
+import { setLang } from '../src/i18n.js';
+
+setLang('es');
 
 test('analyzeJs: detecta el nivel ES mínimo del código', () => {
   assert.equal(analyzeJs('var a = 1;').level, 5);

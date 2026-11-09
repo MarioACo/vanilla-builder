@@ -5,6 +5,7 @@ import { jsImports } from './jsimports.js';
 import { mapLimit } from './compress.js';
 import { parseHtml } from './html.js';
 import { classifyUrl, parseSrcset } from './urls.js';
+import { L } from './i18n.js';
 
 function unescapeCss(s) {
   return s.replace(/\\([0-9a-f]{1,6}[ \t\n]?|[\s\S])/gi, (_, e) => (/^[0-9a-f]/i.test(e) ? String.fromCodePoint(parseInt(e, 16)) : e));
@@ -82,7 +83,12 @@ export async function verifyOutput(staging, outputs, ctx) {
       const candidates = rel === '' || rel.endsWith('/') ? [`${rel}index.html`] : page ? [rel, `${rel}/index.html`, `${rel}.html`] : [rel];
       if (candidates.some(exists)) continue;
       const ci = candidates.map((c) => lower.get(c.toLowerCase())).find(Boolean);
-      errors.push(`${fromRel}: la referencia "${u}" no existe en la salida${ci ? ` (existe "${ci}" con otras mayúsculas)` : ''}.`);
+      errors.push(
+        L(
+          `${fromRel}: la referencia "${u}" no existe en la salida${ci ? ` (existe "${ci}" con otras mayúsculas)` : ''}.`,
+          `${fromRel}: the reference "${u}" does not exist in the output${ci ? ` ("${ci}" exists with different capitalization)` : ''}.`,
+        ),
+      );
     }
   };
 
@@ -98,11 +104,12 @@ export async function verifyOutput(staging, outputs, ctx) {
     try {
       st = fs.statSync(dest);
     } catch {
-      errors.push(`${rel}: no se escribió en disco.`);
+      errors.push(L(`${rel}: no se escribió en disco.`, `${rel}: was not written to disk.`));
       continue;
     }
     const expected = o.copyFrom ? o.size : Buffer.byteLength(o.data);
-    if (st.size !== expected) errors.push(`${rel}: tamaño en disco ${st.size} ≠ esperado ${expected}.`);
+    if (st.size !== expected)
+      errors.push(L(`${rel}: tamaño en disco ${st.size} ≠ esperado ${expected}.`, `${rel}: size on disk ${st.size} ≠ expected ${expected}.`));
     if (o.copyFrom) continue;
     const dir = path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel);
     if (o.type === 'html') {
@@ -115,7 +122,13 @@ export async function verifyOutput(staging, outputs, ctx) {
         if (s.src) check(rel, s.src.value, baseDir);
         if (s.inline && s.kind === 'module') {
           const r = jsImports(s.inline.code, true);
-          if (r.error) errors.push(`${rel}: un <script type="module"> inline no es JS válido (${r.error}).`);
+          if (r.error)
+            errors.push(
+              L(
+                `${rel}: un <script type="module"> inline no es JS válido (${r.error}).`,
+                `${rel}: an inline <script type="module"> is not valid JS (${r.error}).`,
+              ),
+            );
           else for (const spec of r.imports) if (/^\.{0,2}\//.test(spec)) check(rel, spec, baseDir);
         }
       }
@@ -127,12 +140,19 @@ export async function verifyOutput(staging, outputs, ctx) {
     } else if (o.type === 'js') {
       stats.js++;
       const r = parsed.get(rel);
-      if (r.error) errors.push(`${rel}: el JavaScript generado no es válido (${r.error}).`);
+      if (r.error)
+        errors.push(L(`${rel}: el JavaScript generado no es válido (${r.error}).`, `${rel}: the generated JavaScript is not valid (${r.error}).`));
       else for (const spec of r.imports) if (/^\.{0,2}\//.test(spec)) check(rel, spec, dir);
     }
   }
 
   const missing = [...ctx.files.keys()].filter((rel) => !ctx.coverage.has(rel));
-  for (const rel of missing) errors.push(`${rel}: Builder no registró qué hizo con este archivo (no se publicaría).`);
+  for (const rel of missing)
+    errors.push(
+      L(
+        `${rel}: Builder no registró qué hizo con este archivo (no se publicaría).`,
+        `${rel}: Builder did not record what it did with this file (it would not be published).`,
+      ),
+    );
   return { errors, warnings, stats };
 }

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { BuildError } from './util.js';
+import { L } from './i18n.js';
 
 const cache = new Map();
 
@@ -25,9 +26,12 @@ export async function importOptional(name, projectRoot, purpose) {
     }
   }
   if (!mod)
-    throw new BuildError(`Falta el paquete opcional "${name}" ${purpose}.`, [
-      `Instálalo una vez con:  npm install --save-dev ${name}`,
-      'Builder lo carga solo cuando hace falta, por eso no viene incluido (así la instalación base es ligera).',
+    throw new BuildError(L(`Falta el paquete opcional "${name}" ${purpose}.`, `Missing optional package "${name}" ${purpose}.`), [
+      L(`Instálalo una vez con:  npm install --save-dev ${name}`, `Install it once with:  npm install --save-dev ${name}`),
+      L(
+        'Builder lo carga solo cuando hace falta, por eso no viene incluido (así la instalación base es ligera).',
+        'Builder loads it only when needed, so it is not bundled (this keeps the base install small).',
+      ),
     ]);
   cache.set(name, mod);
   return mod;

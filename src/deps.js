@@ -1,5 +1,6 @@
 // Detección de librerías de terceros (jQuery, Bootstrap, paquetes de npm...).
 // No se ofuscan: no aporta nada, las hace más lentas y puede romper su licencia.
+import { L } from './i18n.js';
 
 const DEP_DIRS = /(^|\/)(node_modules|bower_components|jspm_packages|web_modules|vendors?|third[-_]?party|external|externals)\//i;
 const MIN_NAME = /[.-](min|prod|production)\.m?js$|\.umd(\.min)?\.m?js$/i;
@@ -177,23 +178,27 @@ export function packageNames(pkg) {
  * @param {{packages?: Map<string, string>}} [hints] nombres de package.json del proyecto
  */
 export function detectDependency(rel, code = '', hints = {}) {
-  if (DEP_DIRS.test(rel)) return `está en ${rel.match(DEP_DIRS)[2]}/`;
+  if (DEP_DIRS.test(rel)) return L(`está en ${rel.match(DEP_DIRS)[2]}/`, `in ${rel.match(DEP_DIRS)[2]}/`);
   const name = rel.split('/').pop();
-  if (KNOWN.test(name)) return 'nombre de librería conocida';
-  if (MIN_NAME.test(name)) return 'versión ya compilada (.min.js / .umd.js)';
+  if (KNOWN.test(name)) return L('nombre de librería conocida', 'well-known library name');
+  if (MIN_NAME.test(name)) return L('versión ya compilada (.min.js / .umd.js)', 'already compiled build (.min.js / .umd.js)');
   const pkgName = packageLikeName(name);
-  if (hints.packages?.has(pkgName)) return `se llama como el paquete "${hints.packages.get(pkgName)}" de tu package.json`;
+  if (hints.packages?.has(pkgName))
+    return L(
+      `se llama como el paquete "${hints.packages.get(pkgName)}" de tu package.json`,
+      `named like the "${hints.packages.get(pkgName)}" package in your package.json`,
+    );
   const edges = code.length > 8000 ? code.slice(0, 5000) + code.slice(-3000) : code;
-  if (UMD.some((re) => re.test(edges))) return 'envoltorio UMD/AMD (formato de librería publicada)';
+  if (UMD.some((re) => re.test(edges))) return L('envoltorio UMD/AMD (formato de librería publicada)', 'UMD/AMD wrapper (published library format)');
   // Cabecera de librería publicada: /*! o @license con número de versión (jQuery v3.7.1, Bootstrap v5.3.0...).
   // Una cabecera propia sin versión ("/*! Mi app (c) 2026 */") no basta.
   const header = /^\s*\/\*[\s\S]*?\*\//.exec(code.slice(0, 3000))?.[0] ?? '';
   if ((/^\s*\/\*!/.test(header) || /@(license|preserve)\b/.test(header)) && /\bv?\d+\.\d+(\.\d+)?\b/.test(header))
-    return 'cabecera de licencia con versión';
+    return L('cabecera de licencia con versión', 'license header with a version');
   // Código ya minificado: pocas líneas muy largas.
   if (code.length > 4000) {
     const lines = code.split('\n').length;
-    if (code.length / lines > 500) return 'código ya minificado';
+    if (code.length / lines > 500) return L('código ya minificado', 'already minified code');
   }
   return null;
 }

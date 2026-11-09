@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { L } from './i18n.js';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -42,7 +43,7 @@ const MIME = {
 
 const RELOAD_SCRIPT = `<script>(()=>{const s=new EventSource('/__builder/events');let box;
 s.addEventListener('reload',()=>location.reload());
-s.addEventListener('error-build',e=>{box??=document.body.appendChild(Object.assign(document.createElement('pre'),{style:'position:fixed;inset:auto 0 0 0;max-height:50vh;overflow:auto;margin:0;padding:12px;background:#300;color:#fdd;font:12px/1.4 monospace;z-index:2147483647;white-space:pre-wrap'}));box.textContent='Builder: error al compilar\\n\\n'+JSON.parse(e.data)});
+s.addEventListener('error-build',e=>{box??=document.body.appendChild(Object.assign(document.createElement('pre'),{style:'position:fixed;inset:auto 0 0 0;max-height:50vh;overflow:auto;margin:0;padding:12px;background:#300;color:#fdd;font:12px/1.4 monospace;z-index:2147483647;white-space:pre-wrap'}));box.textContent=JSON.parse(e.data)});
 s.addEventListener('ok',()=>{box?.remove();box=null});})();</script>`;
 
 /**
@@ -56,7 +57,7 @@ export function startServer({ dir, port = 5173, host = '127.0.0.1', liveReload =
     try {
       pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname);
     } catch {
-      res.writeHead(400).end('URL inválida');
+      res.writeHead(400).end(L('URL inválida', 'Invalid URL'));
       return;
     }
     if (liveReload && pathname === '/__builder/events') {
@@ -84,7 +85,7 @@ export function startServer({ dir, port = 5173, host = '127.0.0.1', liveReload =
     }
     fs.readFile(file, (err, data) => {
       if (err) {
-        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end(`No encontrado: ${pathname}`);
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end(L(`No encontrado: ${pathname}`, `Not found: ${pathname}`));
         return;
       }
       const ext = path.extname(file).toLowerCase();
@@ -111,7 +112,7 @@ export function startServer({ dir, port = 5173, host = '127.0.0.1', liveReload =
         url: `http://${host === '0.0.0.0' ? 'localhost' : host}:${addr.port}/`,
         port: addr.port,
         reload: () => send('reload'),
-        buildError: (msg) => send('error-build', msg),
+        buildError: (msg) => send('error-build', `${L('Builder: error al compilar', 'Builder: build failed')}\n\n${msg}`),
         buildOk: () => send('ok'),
         close: () =>
           new Promise((r) => {

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { BuildError, isInside, retryFs, copyDir } from './util.js';
+import { L } from './i18n.js';
 
 export const MANIFEST = '.builder-manifest.json';
 
@@ -12,18 +13,40 @@ export function assertSafeOutDir(cfg, { force = false } = {}) {
   const root = path.resolve(cfg.root);
   const parsed = path.parse(out);
   const same = (a, b) => path.relative(a, b) === '';
-  if (same(out, root)) throw new BuildError('"outDir" no puede ser la propia carpeta del proyecto: se borraría el código fuente.');
-  if (isInside(out, root)) throw new BuildError(`"outDir" (${out}) contiene al proyecto; se borraría el código fuente.`);
-  if (same(out, parsed.root)) throw new BuildError('"outDir" no puede ser la raíz de una unidad.');
-  if (same(out, os.homedir())) throw new BuildError('"outDir" no puede ser tu carpeta de usuario.');
+  if (same(out, root))
+    throw new BuildError(
+      L(
+        '"outDir" no puede ser la propia carpeta del proyecto: se borraría el código fuente.',
+        '"outDir" cannot be the project folder itself: the source code would be deleted.',
+      ),
+    );
+  if (isInside(out, root))
+    throw new BuildError(
+      L(
+        `"outDir" (${out}) contiene al proyecto; se borraría el código fuente.`,
+        `"outDir" (${out}) contains the project; the source code would be deleted.`,
+      ),
+    );
+  if (same(out, parsed.root)) throw new BuildError(L('"outDir" no puede ser la raíz de una unidad.', '"outDir" cannot be the root of a drive.'));
+  if (same(out, os.homedir())) throw new BuildError(L('"outDir" no puede ser tu carpeta de usuario.', '"outDir" cannot be your home folder.'));
   if (!cfg.clean || force) return;
   if (fs.existsSync(out)) {
-    if (!fs.statSync(out).isDirectory()) throw new BuildError(`"outDir" existe y no es una carpeta: ${out}`);
+    if (!fs.statSync(out).isDirectory())
+      throw new BuildError(L(`"outDir" existe y no es una carpeta: ${out}`, `"outDir" exists and is not a folder: ${out}`));
     const entries = fs.readdirSync(out);
     if (entries.length && !entries.includes(MANIFEST))
-      throw new BuildError(`La carpeta de salida ${out} ya tiene archivos y no la creó Builder. No la borro para no perder datos.`, [
-        'Elige otra carpeta con --out, vacíala tú mismo o usa --force si estás seguro.',
-      ]);
+      throw new BuildError(
+        L(
+          `La carpeta de salida ${out} ya tiene archivos y no la creó Builder. No la borro para no perder datos.`,
+          `The output folder ${out} already has files and was not created by Builder. Not deleting it, to avoid losing data.`,
+        ),
+        [
+          L(
+            'Elige otra carpeta con --out, vacíala tú mismo o usa --force si estás seguro.',
+            'Choose another folder with --out, empty it yourself, or use --force if you are sure.',
+          ),
+        ],
+      );
   }
 }
 
@@ -89,7 +112,12 @@ export async function swapIntoPlace(cfg, staging) {
       await rmrf(staging);
     } catch (copyErr) {
       if (exists) await retryFs(() => fs.promises.rename(old, out)).catch(() => {});
-      throw new BuildError(`No pude colocar la salida en ${out}: ${copyErr.message ?? err.message}`);
+      throw new BuildError(
+        L(
+          `No pude colocar la salida en ${out}: ${copyErr.message ?? err.message}`,
+          `Could not place the output in ${out}: ${copyErr.message ?? err.message}`,
+        ),
+      );
     }
   }
   if (exists) await rmrf(old).catch(() => {});

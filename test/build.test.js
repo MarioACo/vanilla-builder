@@ -526,6 +526,65 @@ test('TypeScript inválido: se avisa y no se pierde el archivo', async () => {
   assert.ok(exists(dir, 'dist/js/roto.ts'), 'se copia tal cual');
 });
 
+test('idioma: inglés por defecto fuera de un sistema en español, --lang y BUILDER_LANG', () => {
+  const dir = copyFixture('classic');
+  const run = (env, ...args) =>
+    spawnSync(process.execPath, [CLI, ...args], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { ...process.env, NO_COLOR: '1', BUILDER_LANG: '', LC_ALL: '', LC_MESSAGES: '', ...env },
+    });
+  const en = run({ LANG: 'en_US.UTF-8' }, 'build', '--obfuscate', 'low');
+  assert.equal(en.status, 0, en.stderr);
+  assert.match(en.stdout, /Verification: \d+ files written/);
+  assert.match(en.stdout, /Detected dependencies \(not obfuscated\)/);
+  assert.doesNotMatch(en.stdout, /Verificación|archivos/);
+  const es = run({ LANG: 'en_US.UTF-8', BUILDER_LANG: 'es' }, 'build');
+  assert.match(es.stdout, /Verificación: \d+ archivos escritos/);
+  const flag = run({ LANG: 'es_MX.UTF-8' }, 'analyze', '--lang', 'en');
+  assert.match(flag.stdout, /What will happen to each project file/);
+  // Los estados de cobertura se traducen junto con las comparaciones que los usan.
+  assert.match(flag.stdout, /bundled|processed|merged/);
+  assert.doesNotMatch(flag.stdout, /empaquetado|procesado|unido/);
+  // Errores en inglés y --json con los mismos campos en cualquier idioma.
+  const bad = run({ LANG: 'en_US.UTF-8' }, 'build', '--out', '.', '--json');
+  assert.notEqual(bad.status, 0);
+  assert.match(JSON.parse(bad.stdout).error, /cannot be the project folder/);
+  const help = run({ LANG: 'en_US.UTF-8' }, 'help');
+  assert.match(help.stdout, /Usage:/);
+  assert.match(run({}, 'help', '--lang=es').stdout, /Uso:/);
+});
+
+test('idioma: en inglés, las comparaciones de estados internos siguen funcionando', async () => {
+  const { setLang } = await import('../src/i18n.js');
+  setLang('en');
+  try {
+    const dir = tempDir();
+    writeFiles(dir, {
+      'index.html': page('<script type="module" src="js/main.js"></script>'),
+      'js/main.js': "import { N } from './const.js';\nconsole.log(N);\nfetch('extra/datos.json');\n",
+      'js/const.js': 'export const N = 1;\n',
+      'extra/suelto.js': 'var suelto = 1;\n',
+      'extra/datos.json': '{ "a": 1 }',
+    });
+    const r = await buildDir(dir, { unreferenced: 'copy' });
+    const cov = Object.fromEntries(r.coverage);
+    assert.ok(
+      cov['js/const.js'].some((s) => s.startsWith('bundled')),
+      JSON.stringify(cov['js/const.js']),
+    );
+    assert.deepEqual(cov['extra/suelto.js'], ['unreferenced: copied → extra/suelto.js']);
+    assert.ok(exists(dir, 'dist/extra/suelto.js'));
+    assert.ok(exists(dir, 'dist/extra/datos.json'));
+    assert.ok(
+      r.perf.phases.some(([name]) => name === 'modules'),
+      'las fases van siempre en inglés',
+    );
+  } finally {
+    setLang('es');
+  }
+});
+
 test('dependencias: un archivo con el nombre de un paquete de package.json', async () => {
   const dir = tempDir();
   writeFiles(dir, {
